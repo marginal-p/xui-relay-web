@@ -733,15 +733,15 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             return self.send_json({"error": "Unauthorized"}, 401)
 
         if path == "/api/nodes/add":
-            raw_socks = params.get("socks5_str", "").strip()
-            remark = params.get("remark", "").strip() or None
+            raw_socks = (params.get("socks5_str") or "").strip()
+            remark = (params.get("remark") or "").strip() or None
             custom_port = params.get("port")
             if custom_port:
                 try:
                     custom_port = int(custom_port)
                 except Exception:
                     custom_port = None
-            sni = params.get("sni", "").strip() or None
+            sni = (params.get("sni") or "").strip() or None
 
             parsed_socks = Socks5Parser.parse(raw_socks)
             if not parsed_socks:
@@ -755,8 +755,8 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 return self.send_json({"success": False, "error": str(e)}, 500)
 
         if path == "/api/nodes/batch-add":
-            batch_text = params.get("batch_text", "").strip()
-            sni = params.get("sni", "").strip() or None
+            batch_text = (params.get("batch_text") or "").strip()
+            sni = (params.get("sni") or "").strip() or None
             lines = [l.strip() for l in batch_text.splitlines() if l.strip()]
             if not lines:
                 return self.send_json({"success": False, "error": "没有输入有效的节点行"}, 400)
@@ -793,19 +793,19 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             return self.send_json({"success": ok, "msg": msg})
 
         if path == "/api/nodes/test":
-            host = params.get("host", "").strip()
+            host = (params.get("host") or "").strip()
             port = int(params.get("port", 0))
-            user = params.get("user", "")
-            pwd = params.get("pass", "")
+            user = str(params.get("user") or "")
+            pwd = str(params.get("pass") or "")
             if not host or not port:
                 return self.send_json({"success": False, "error": "缺少主机或端口"}, 400)
             test_res = test_socks5_connectivity(host, port, user, pwd)
             return self.send_json({"success": True, "result": test_res})
 
         if path == "/api/settings/update":
-            new_u = params.get("username", "").strip()
-            new_p = params.get("password", "").strip()
-            new_sni = params.get("default_sni", "").strip()
+            new_u = (params.get("username") or "").strip()
+            new_p = (params.get("password") or "").strip()
+            new_sni = (params.get("default_sni") or "").strip()
             if new_u:
                 CURRENT_CONFIG["username"] = new_u
             if new_p:
