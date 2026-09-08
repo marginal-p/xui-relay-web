@@ -83,22 +83,20 @@ class XrayHelper:
         """生成 X25519 密钥对"""
         if os.path.exists(XRAY_BIN):
             try:
-                res = subprocess.run([XRAY_BIN, "x25519"], capture_stdout=True, text=True, timeout=5)
+                res = subprocess.run([XRAY_BIN, "x25519"], capture_output=True, text=True, timeout=5)
                 out = res.stdout
                 priv, pub = None, None
                 for line in out.splitlines():
                     if "PrivateKey:" in line:
                         priv = line.split(":", 1)[1].strip()
-                    elif "Password (PublicKey):" in line or "PublicKey:" in line:
+                    elif "PublicKey" in line:
                         pub = line.split(":", 1)[1].strip()
-                if priv and pub:
+                if priv and pub and priv != pub:
                     return priv, pub
             except Exception as e:
-                print(f"[Warn] Xray x25519 failed: {e}")
-
-        # Fallback: 使用预生成的标准随机生成格式
-        token = secrets.token_urlsafe(32)
-        return token, token
+                print(f"[Error] Xray x25519 failed: {e}")
+                raise Exception(f"生成 X25519 密钥对失败: {e}")
+        raise Exception(f"未找到 Xray 核心工具: {XRAY_BIN}")
 
     @staticmethod
     def generate_uuid():
