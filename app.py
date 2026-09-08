@@ -604,6 +604,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 class RelayWebHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
     def send_json(self, data, status=200, cookie=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -640,6 +643,28 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 "db_path": CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH),
                 "default_sni": CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
             })
+
+        if path == "/api/qrcode":
+            query = urllib.parse.parse_qs(parsed.query)
+            txt = query.get("text", [""])[0]
+            if not txt:
+                self.send_response(400)
+                self.end_headers()
+                return
+            try:
+                res = subprocess.run(["qrencode", "-t", "SVG", "-m", "2", "-o", "-", txt], capture_output=True, timeout=3)
+                if res.returncode == 0:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/svg+xml")
+                    self.send_header("Content-Length", str(len(res.stdout)))
+                    self.end_headers()
+                    self.wfile.write(res.stdout)
+                    return
+            except Exception:
+                pass
+            self.send_response(500)
+            self.end_headers()
+            return
 
         if path == "/api/nodes":
             if not self.is_authenticated():
