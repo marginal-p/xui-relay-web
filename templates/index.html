@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>x-ui 静态IP中转管理面板</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <style>
+    [v-cloak] { display: none; }
+    .glass-card {
+      background: rgba(30, 41, 59, 0.7);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.4);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans selection:bg-indigo-500 selection:text-white">
+
+<div id="app" v-cloak class="min-h-screen flex flex-col">
+
+  <!-- 顶部导航栏 -->
+  <header class="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 font-bold text-lg">
+          🔀
+        </div>
+        <div>
+          <h1 class="font-bold text-lg tracking-wide bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
+            x-ui 静态IP中转管理系统
+          </h1>
+          <p class="text-xs text-slate-400">Socks5 落地 ➔ VLESS + Reality 中转</p>
+        </div>
+      </div>
+
+      <div v-if="isLoggedIn" class="flex items-center space-x-4 text-sm">
+        <div class="hidden sm:flex items-center space-x-2 bg-slate-800/60 px-3 py-1.5 rounded-lg border border-slate-700/50">
+          <span class="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="text-xs text-slate-400">服务器:</span>
+          <span class="font-mono text-xs font-semibold text-indigo-300">{{ serverIp }}</span>
+        </div>
+
+        <button @click="openSettings" class="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-800 transition" title="设置">
+          ⚙️ 设置
+        </button>
+
+        <button @click="logout" class="bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-3 py-1.5 rounded-lg text-xs font-medium border border-rose-500/20 transition">
+          退出
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 登录页面 -->
+  <main v-if="!isLoggedIn" class="flex-1 flex items-center justify-center p-4">
+    <div class="w-full max-w-md glass-card rounded-2xl p-8 shadow-2xl shadow-black/60">
+      <div class="text-center mb-8">
+        <div class="w-16 h-16 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 flex items-center justify-center mx-auto mb-4 text-3xl">
+          🔐
+        </div>
+        <h2 class="text-2xl font-bold text-white">登录管理后台</h2>
+        <p class="text-sm text-slate-400 mt-1">请输入管理员账号及密码</p>
+      </div>
+
+      <form @submit.prevent="handleLogin" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">用户名</label>
+          <input v-model="loginForm.username" type="text" required placeholder="请输入用户名"
+                 class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none text-sm transition">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1">密码</label>
+          <input v-model="loginForm.password" type="password" required placeholder="请输入密码"
+                 class="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none text-sm transition">
+        </div>
+        <div v-if="loginError" class="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-rose-400 text-xs">
+          {{ loginError }}
+        </div>
+        <button type="submit" :disabled="loggingIn"
+                class="w-full py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 rounded-xl font-medium text-sm text-white shadow-lg shadow-indigo-600/25 transition disabled:opacity-50">
+          {{ loggingIn ? '登录中...' : '进入面板' }}
+        </button>
+      </form>
+    </div>
+  </main>
+
+  <!-- 已登录主管理界面 -->
+  <main v-else class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- 快捷统计面板 -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div class="glass-card rounded-xl p-4 flex items-center space-x-3">
+        <div class="p-3 bg-indigo-500/10 text-indigo-400 rounded-lg text-xl">🌐</div>
+        <div>
+          <div class="text-xs text-slate-400">中转节点数</div>
+          <div class="text-xl font-bold text-white">{{ relayNodesCount }} <span class="text-xs text-slate-400 font-normal">/ {{ nodes.length }}</span></div>
+        </div>
+      </div>
+      <div class="glass-card rounded-xl p-4 flex items-center space-x-3">
+        <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-lg text-xl">⬆️</div>
+        <div>
+          <div class="text-xs text-slate-400">累计上传</div>
+          <div class="text-lg font-bold text-emerald-400">{{ formatTraffic(totalUp) }}</div>
+        </div>
+      </div>
+      <div class="glass-card rounded-xl p-4 flex items-center space-x-3">
+        <div class="p-3 bg-sky-500/10 text-sky-400 rounded-lg text-xl">⬇️</div>
+        <div>
+          <div class="text-xs text-slate-400">累计下载</div>
+          <div class="text-lg font-bold text-sky-400">{{ formatTraffic(totalDown) }}</div>
+        </div>
+      </div>
+      <div class="glass-card rounded-xl p-4 flex items-center space-x-3">
+        <div class="p-3 bg-purple-500/10 text-purple-400 rounded-lg text-xl">🛡️</div>
+        <div>
+          <div class="text-xs text-slate-400">入站协议</div>
+          <div class="text-lg font-bold text-purple-300">VLESS Reality</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 添加节点卡片 -->
+    <div class="glass-card rounded-2xl overflow-hidden shadow-lg border border-slate-800">
+      <div class="border-b border-slate-800/80 px-6 py-4 flex items-center justify-between">
+        <div class="flex items-center space-x-3">
+          <span class="text-indigo-400 font-semibold text-base">➕ 添加中转节点</span>
+        </div>
+        <div class="flex items-center space-x-2 text-xs">
+          <button @click="addMode = 'single'" :class="addMode === 'single' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                  class="px-3 py-1.5 rounded-lg transition font-medium">单节点添加</button>
+          <button @click="addMode = 'batch'" :class="addMode === 'batch' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'"
+                  class="px-3 py-1.5 rounded-lg transition font-medium">批量多行导入</button>
+        </div>
+      </div>
+
+      <!-- 单节点模式 -->
+      <div v-if="addMode === 'single'" class="p-6 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1.5">
+            Socks5 落地节点地址 <span class="text-rose-400">*</span>
+          </label>
+          <div class="flex flex-col sm:flex-row gap-2">
+            <input v-model="singleForm.rawSocks" type="text"
+                   placeholder="支持 82.110.39.8:7610:user:pass 或 socks5://user:pass@ip:port 或 ip:port"
+                   class="flex-1 px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm focus:border-indigo-500 outline-none">
+            <button @click="testCurrentSocks" :disabled="testingSingle"
+                    class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-medium border border-slate-700 transition flex items-center justify-center space-x-1 whitespace-nowrap">
+              <span>{{ testingSingle ? '正在探测...' : '⚡ 测试连通性' }}</span>
+            </button>
+          </div>
+          <!-- 连通性测试结果 -->
+          <div v-if="testResult" class="mt-2 p-2.5 rounded-xl text-xs flex items-center space-x-2"
+               :class="testResult.ok ? 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-300' : 'bg-rose-500/10 border border-rose-500/20 text-rose-300'">
+            <span>{{ testResult.ok ? '✅ 连通正常' : '❌ 连接失败' }}</span>
+            <span v-if="testResult.ok">| 延迟: {{ testResult.latency }}ms | 出口IP: {{ testResult.exit_ip }}</span>
+            <span v-else>| 错误: {{ testResult.error }}</span>
+          </div>
+        </div>
+
+        <!-- 折叠高级设置 -->
+        <div>
+          <button @click="showAdvanced = !showAdvanced" class="text-xs text-indigo-400 hover:text-indigo-300 flex items-center space-x-1">
+            <span>{{ showAdvanced ? '收起高级设置 ▲' : '展开高级设置 (自定义端口 / 备注 / 伪装域名) ▼' }}</span>
+          </button>
+          <div v-if="showAdvanced" class="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 pt-3 border-t border-slate-800/60">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">自定义中转端口 (留空随机分配)</label>
+              <input v-model="singleForm.port" type="number" placeholder="20000-60000"
+                     class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">自定义节点备注 (留空默认为落地IP)</label>
+              <input v-model="singleForm.remark" type="text" placeholder="如：美国静态中转-01"
+                     class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none">
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Reality 伪装域名 (SNI)</label>
+              <input v-model="singleForm.sni" type="text" placeholder="apple.com"
+                     class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none">
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-2">
+          <button @click="addSingleNode" :disabled="addingSingle"
+                  class="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 rounded-xl font-medium text-sm text-white shadow-lg shadow-indigo-600/25 transition disabled:opacity-50 flex items-center justify-center space-x-2">
+            <span>{{ addingSingle ? '正在编译配置并重载 x-ui...' : '🚀 一键生成中转节点' }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 批量模式 -->
+      <div v-else class="p-6 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-300 mb-1.5">
+            批量粘贴 Socks5 静态IP列表（一行一个）
+          </label>
+          <textarea v-model="batchText" rows="6"
+                    placeholder="格式示例：&#10;82.110.39.8:7610:user1:pass1&#10;82.110.39.9:7610:user2:pass2&#10;socks5://user3:pass3@1.2.3.4:1080"
+                    class="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono focus:border-indigo-500 outline-none"></textarea>
+        </div>
+
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div class="flex items-center space-x-2 text-xs w-full sm:w-auto">
+            <span class="text-slate-400">统一伪装域名:</span>
+            <input v-model="batchSni" type="text" placeholder="apple.com"
+                   class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none w-36">
+          </div>
+
+          <button @click="addBatchNodes" :disabled="addingBatch"
+                  class="w-full sm:w-auto px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 rounded-xl font-medium text-sm text-white shadow-lg shadow-indigo-600/25 transition disabled:opacity-50">
+            {{ addingBatch ? '正在批量生成中...' : '🚀 批量一键生成并生效' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 节点管理表格 -->
+    <div class="glass-card rounded-2xl overflow-hidden shadow-lg border border-slate-800">
+      <div class="border-b border-slate-800/80 px-6 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div class="flex items-center space-x-3">
+          <h2 class="font-bold text-base text-white">中转节点列表</h2>
+          <span class="text-xs bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-md font-mono">{{ filteredNodes.length }} 个节点</span>
+        </div>
+
+        <div class="flex items-center space-x-2 w-full sm:w-auto">
+          <input v-model="searchQuery" type="text" placeholder="搜索备注/端口/IP..."
+                 class="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none w-full sm:w-48">
+          <button @click="exportAllLinks" class="whitespace-nowrap px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition">
+            📋 批量导出
+          </button>
+          <button @click="fetchNodes" class="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-xs" title="刷新">
+            🔄
+          </button>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto custom-scrollbar">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-900/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-medium">
+            <tr>
+              <th class="px-4 py-3">备注</th>
+              <th class="px-4 py-3">中转端口</th>
+              <th class="px-4 py-3">落地 Socks5 节点</th>
+              <th class="px-4 py-3">流量统计 (上/下)</th>
+              <th class="px-4 py-3">伪装 SNI</th>
+              <th class="px-4 py-3 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800/60">
+            <tr v-for="n in filteredNodes" :key="n.id" class="hover:bg-slate-800/30 transition">
+              <td class="px-4 py-3 font-medium text-white">
+                <div class="flex items-center space-x-1.5">
+                  <span v-if="n.is_relay" class="w-2 h-2 rounded-full bg-indigo-400"></span>
+                  <span v-else class="w-2 h-2 rounded-full bg-slate-500"></span>
+                  <span>{{ n.remark }}</span>
+                </div>
+              </td>
+              <td class="px-4 py-3">
+                <span class="font-mono text-indigo-300 font-bold text-sm">{{ n.port }}</span>
+              </td>
+              <td class="px-4 py-3 font-mono">
+                <div v-if="n.socks5" class="space-y-0.5">
+                  <div class="text-slate-200 font-semibold">{{ n.socks5.host }}:{{ n.socks5.port }}</div>
+                  <div v-if="n.socks5.user" class="text-slate-500 text-[10px]">用户: {{ n.socks5.user }}</div>
+                </div>
+                <span v-else class="text-slate-500 italic">直连出站 / 默认</span>
+              </td>
+              <td class="px-4 py-3 font-mono text-slate-300">
+                <div>⬆ {{ formatTraffic(n.up) }}</div>
+                <div>⬇ {{ formatTraffic(n.down) }}</div>
+              </td>
+              <td class="px-4 py-3 font-mono text-slate-400">
+                {{ n.sni }}
+              </td>
+              <td class="px-4 py-3 text-right space-x-1 whitespace-nowrap">
+                <button @click="copyVless(n.vless_link)" class="px-2.5 py-1 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/20 transition" title="复制VLESS链接">
+                  复制
+                </button>
+                <button @click="showQr(n)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded border border-slate-700 transition" title="二维码">
+                  二维码
+                </button>
+                <button v-if="n.socks5" @click="testNode(n)" class="px-2.5 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded border border-emerald-500/20 transition" title="在线测通">
+                  测通
+                </button>
+                <button @click="deleteNode(n)" class="px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded border border-rose-500/20 transition" title="删除">
+                  删除
+                </button>
+              </td>
+            </tr>
+            <tr v-if="filteredNodes.length === 0">
+              <td colspan="6" class="px-4 py-8 text-center text-slate-500">
+                暂无节点，请在上方添加您的第一个静态IP中转节点
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- 二维码弹窗 -->
+  <div v-if="qrModal.show" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-sm w-full p-6 text-center shadow-2xl relative">
+      <button @click="qrModal.show = false" class="absolute top-4 right-4 text-slate-400 hover:text-white text-lg">✕</button>
+      <h3 class="font-bold text-base text-white mb-1">{{ qrModal.title }}</h3>
+      <p class="text-xs text-slate-400 mb-4 font-mono">端口: {{ qrModal.port }}</p>
+      
+      <div class="bg-white p-3 rounded-xl inline-block shadow-inner mb-4">
+        <canvas id="qrCanvas" class="w-48 h-48"></canvas>
+      </div>
+
+      <div class="space-y-2">
+        <button @click="copyVless(qrModal.link)" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition">
+          复制 VLESS 链接
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批量导出弹窗 -->
+  <div v-if="exportModal.show" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative">
+      <button @click="exportModal.show = false" class="absolute top-4 right-4 text-slate-400 hover:text-white text-lg">✕</button>
+      <h3 class="font-bold text-base text-white mb-2">批量导出 VLESS 节点链接</h3>
+      <p class="text-xs text-slate-400 mb-3">共 {{ exportModal.links.length }} 个节点，可直接导入支持 VLESS 的客户端（Shadowrocket、v2rayN、Clash Meta、Sing-box 等）：</p>
+      <textarea readonly rows="10" :value="exportModal.raw"
+                class="w-full p-3 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-slate-300 focus:outline-none mb-4 custom-scrollbar"></textarea>
+      <button @click="copyVless(exportModal.raw)" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition">
+        一键复制全部链接
+      </button>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div v-if="settingsModal.show" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="glass-card rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
+      <button @click="settingsModal.show = false" class="absolute top-4 right-4 text-slate-400 hover:text-white text-lg">✕</button>
+      <h3 class="font-bold text-base text-white mb-4">系统设置</h3>
+      <form @submit.prevent="saveSettings" class="space-y-4">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">修改面板管理员密码</label>
+          <input v-model="settingsModal.password" type="password" placeholder="不修改则留空"
+                 class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">全局默认伪装域名 (SNI)</label>
+          <input v-model="settingsModal.sni" type="text" placeholder="apple.com"
+                 class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs focus:border-indigo-500 outline-none">
+        </div>
+        <button type="submit" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium transition">
+          保存设置
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 全局 Toast 提示 -->
+  <div v-if="toast.show" class="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl text-xs font-medium transition-all duration-300 flex items-center space-x-2"
+       :class="toast.type === 'error' ? 'bg-rose-600 text-white shadow-rose-900/50' : 'bg-indigo-600 text-white shadow-indigo-900/50'">
+    <span>{{ toast.msg }}</span>
+  </div>
+
+</div>
+
+<script>
+  const { createApp, ref, computed, onMounted, nextTick } = Vue;
+
+  createApp({
+    setup() {
+      const isLoggedIn = ref(false);
+      const loggingIn = ref(false);
+      const loginError = ref('');
+      const loginForm = ref({ username: 'marginal', password: '' });
+      
+      const serverIp = ref('212.135.38.177');
+      const nodes = ref([]);
+      const searchQuery = ref('');
+      const addMode = ref('single');
+      const showAdvanced = ref(false);
+
+      const singleForm = ref({
+        rawSocks: '',
+        port: '',
+        remark: '',
+        sni: 'apple.com'
+      });
+      const testingSingle = ref(false);
+      const testResult = ref(null);
+      const addingSingle = ref(false);
+
+      const batchText = ref('');
+      const batchSni = ref('apple.com');
+      const addingBatch = ref(false);
+
+      const qrModal = ref({ show: false, title: '', port: '', link: '' });
+      const exportModal = ref({ show: false, links: [], raw: '' });
+      const settingsModal = ref({ show: false, password: '', sni: 'apple.com' });
+      const toast = ref({ show: false, msg: '', type: 'info' });
+
+      const showToast = (msg, type = 'info') => {
+        toast.value = { show: true, msg, type };
+        setTimeout(() => { toast.value.show = false; }, 3000);
+      };
+
+      const checkAuth = async () => {
+        try {
+          const res = await fetch('/api/status');
+          if (res.ok) {
+            const data = await res.json();
+            isLoggedIn.value = true;
+            serverIp.value = data.server_ip;
+            fetchNodes();
+          } else {
+            isLoggedIn.value = false;
+          }
+        } catch {
+          isLoggedIn.value = false;
+        }
+      };
+
+      const handleLogin = async () => {
+        loggingIn.value = true;
+        loginError.value = '';
+        try {
+          const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(loginForm.value)
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            isLoggedIn.value = true;
+            fetchNodes();
+            showToast('登录成功');
+          } else {
+            loginError.value = data.error || '登录失败';
+          }
+        } catch (e) {
+          loginError.value = '无法连接服务器: ' + e.message;
+        } finally {
+          loggingIn.value = false;
+        }
+      };
+
+      const logout = async () => {
+        await fetch('/api/logout', { method: 'POST' });
+        isLoggedIn.value = false;
+      };
+
+      const fetchNodes = async () => {
+        try {
+          const res = await fetch('/api/nodes');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.success) {
+              nodes.value = data.nodes;
+            }
+          }
+        } catch (e) {
+          showToast('获取节点失败: ' + e.message, 'error');
+        }
+      };
+
+      const filteredNodes = computed(() => {
+        if (!searchQuery.value.trim()) return nodes.value;
+        const q = searchQuery.value.toLowerCase();
+        return nodes.value.filter(n => {
+          return (n.remark && n.remark.toLowerCase().includes(q)) ||
+                 (String(n.port).includes(q)) ||
+                 (n.socks5 && n.socks5.host.includes(q));
+        });
+      });
+
+      const relayNodesCount = computed(() => nodes.value.filter(n => n.is_relay).length);
+      const totalUp = computed(() => nodes.value.reduce((acc, n) => acc + (n.up || 0), 0));
+      const totalDown = computed(() => nodes.value.reduce((acc, n) => acc + (n.down || 0), 0));
+
+      const formatTraffic = (bytes) => {
+        if (!bytes) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      };
+
+      // 测试单个 Socks5
+      const testCurrentSocks = async () => {
+        if (!singleForm.value.rawSocks.trim()) {
+          showToast('请先输入 Socks5 节点地址', 'error');
+          return;
+        }
+        testingSingle.value = true;
+        testResult.value = null;
+
+        // 简易前端预拆分提取 host/port 测试
+        let raw = singleForm.value.rawSocks.trim();
+        if (raw.startsWith('socks5://')) raw = raw.slice(9);
+        let host = '', port = 0, user = '', pwd = '';
+        if (raw.includes('@')) {
+          const [auth, hp] = raw.split('@');
+          if (auth.includes(':')) [user, pwd] = auth.split(':');
+          else user = auth;
+          if (hp.includes(':')) [host, port] = hp.split(':');
+        } else {
+          const parts = raw.split(':');
+          if (parts.length >= 4) {
+            [host, port, user, pwd] = parts;
+          } else if (parts.length >= 2) {
+            host = parts[0];
+            port = parts[1];
+          }
+        }
+
+        try {
+          const res = await fetch('/api/nodes/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host, port: parseInt(port), user, pass: pwd })
+          });
+          const data = await res.json();
+          if (data.success) {
+            testResult.value = data.result;
+          } else {
+            testResult.value = { ok: false, error: data.error };
+          }
+        } catch (e) {
+          testResult.value = { ok: false, error: e.message };
+        } finally {
+          testingSingle.value = false;
+        }
+      };
+
+      // 添加单个节点
+      const addSingleNode = async () => {
+        if (!singleForm.value.rawSocks.trim()) {
+          showToast('请输入 Socks5 落地节点地址', 'error');
+          return;
+        }
+        addingSingle.value = true;
+        try {
+          const res = await fetch('/api/nodes/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              socks5_str: singleForm.value.rawSocks,
+              remark: singleForm.value.remark,
+              port: singleForm.value.port ? parseInt(singleForm.value.port) : null,
+              sni: singleForm.value.sni
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast('✅ 节点已成功创建并应用！');
+            singleForm.value.rawSocks = '';
+            singleForm.value.remark = '';
+            singleForm.value.port = '';
+            testResult.value = null;
+            await fetchNodes();
+            // 自动弹窗展示生成的节点
+            const createdNode = data.node;
+            showQr({
+              remark: createdNode.remark,
+              port: createdNode.port,
+              vless_link: createdNode.vless_link
+            });
+          } else {
+            showToast('创建失败: ' + (data.error || '未知错误'), 'error');
+          }
+        } catch (e) {
+          showToast('请求失败: ' + e.message, 'error');
+        } finally {
+          addingSingle.value = false;
+        }
+      };
+
+      // 批量添加
+      const addBatchNodes = async () => {
+        if (!batchText.value.trim()) {
+          showToast('请粘贴至少一行 Socks5 节点', 'error');
+          return;
+        }
+        addingBatch.value = true;
+        try {
+          const res = await fetch('/api/nodes/batch-add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              batch_text: batchText.value,
+              sni: batchSni.value
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast(`✅ 成功添加 ${data.succeeded} 个节点！`);
+            batchText.value = '';
+            await fetchNodes();
+          } else {
+            showToast('批量添加失败: ' + (data.error || '未知错误'), 'error');
+          }
+        } catch (e) {
+          showToast('请求失败: ' + e.message, 'error');
+        } finally {
+          addingBatch.value = false;
+        }
+      };
+
+      // 删除节点
+      const deleteNode = async (n) => {
+        if (!confirm(`确定要删除中转节点 [${n.remark}] (端口:${n.port}) 吗？`)) return;
+        try {
+          const res = await fetch('/api/nodes/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: n.id })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast('节点已删除并已重载');
+            await fetchNodes();
+          } else {
+            showToast('删除失败: ' + data.msg, 'error');
+          }
+        } catch (e) {
+          showToast('操作失败: ' + e.message, 'error');
+        }
+      };
+
+      // 在线测通某个列表节点
+      const testNode = async (n) => {
+        if (!n.socks5) return;
+        showToast(`正在探测 [${n.remark}] 连通性...`);
+        try {
+          const res = await fetch('/api/nodes/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              host: n.socks5.host,
+              port: n.socks5.port,
+              user: n.socks5.user,
+              pass: n.socks5.pass
+            })
+          });
+          const data = await res.json();
+          if (data.success && data.result.ok) {
+            alert(`✅ 节点 [${n.remark}] 探测成功！\n延迟: ${data.result.latency}ms\n真实落地出口IP: ${data.result.exit_ip}`);
+          } else {
+            alert(`❌ 节点 [${n.remark}] 连接失败: ${data.result ? data.result.error : data.error}`);
+          }
+        } catch (e) {
+          showToast('测试异常: ' + e.message, 'error');
+        }
+      };
+
+      // 复制链接
+      const copyVless = (link) => {
+        if (!link) return;
+        navigator.clipboard.writeText(link).then(() => {
+          showToast('📋 已复制到剪贴板！');
+        }).catch(() => {
+          // Fallback
+          const ta = document.createElement('textarea');
+          ta.value = link;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          showToast('📋 已复制到剪贴板！');
+        });
+      };
+
+      // 展示二维码
+      const showQr = (n) => {
+        qrModal.value = {
+          show: true,
+          title: n.remark,
+          port: n.port,
+          link: n.vless_link
+        };
+        nextTick(() => {
+          const canvas = document.getElementById('qrCanvas');
+          if (canvas && QRCode) {
+            QRCode.toCanvas(canvas, n.vless_link, { width: 192, margin: 1 }, (err) => {
+              if (err) console.error(err);
+            });
+          }
+        });
+      };
+
+      // 批量导出
+      const exportAllLinks = async () => {
+        try {
+          const res = await fetch('/api/export');
+          const data = await res.json();
+          if (data.success) {
+            exportModal.value = {
+              show: true,
+              links: data.links,
+              raw: data.raw
+            };
+          }
+        } catch (e) {
+          showToast('导出失败: ' + e.message, 'error');
+        }
+      };
+
+      const openSettings = () => {
+        settingsModal.value = { show: true, password: '', sni: 'apple.com' };
+      };
+
+      const saveSettings = async () => {
+        try {
+          const res = await fetch('/api/settings/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              password: settingsModal.value.password,
+              default_sni: settingsModal.value.sni
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            showToast('设置已保存');
+            settingsModal.value.show = false;
+          }
+        } catch (e) {
+          showToast('保存设置失败: ' + e.message, 'error');
+        }
+      };
+
+      onMounted(() => {
+        checkAuth();
+      });
+
+      return {
+        isLoggedIn, loggingIn, loginError, loginForm,
+        serverIp, nodes, filteredNodes, searchQuery, relayNodesCount, totalUp, totalDown,
+        addMode, showAdvanced, singleForm, testingSingle, testResult, addingSingle,
+        batchText, batchSni, addingBatch,
+        qrModal, exportModal, settingsModal, toast,
+        handleLogin, logout, fetchNodes, formatTraffic,
+        testCurrentSocks, addSingleNode, addBatchNodes, deleteNode, testNode,
+        copyVless, showQr, exportAllLinks, openSettings, saveSettings
+      };
+    }
+  }).mount('#app');
+</script>
+</body>
+</html>
