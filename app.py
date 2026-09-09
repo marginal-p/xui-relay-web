@@ -989,7 +989,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             if not self.is_authenticated() and (not req_token or req_token != valid_token):
                 return self.send_json({"error": "Unauthorized subscription token"}, 401)
 
-            target_group = query.get("group", [""])[0] or None
+            target_group = urllib.parse.unquote(query.get("group", [""])[0]).strip() or None
             mgr = XuiManager()
             nodes = mgr.list_relay_nodes(target_group=target_group)
             yaml_content = generate_clash_meta_yaml(nodes, group_name=target_group or "全部分组", server_ip=CURRENT_CONFIG.get("server_ip", SERVER_IP))
@@ -997,7 +997,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/x-yaml; charset=utf-8")
-            self.send_header("Content-Disposition", f'attachment; filename="clash_meta_{(target_group or "all")}.yaml"')
+            self.send_header("Content-Disposition", 'attachment; filename="clash_meta.yaml"')
             self.send_header("Content-Length", str(len(yaml_bytes)))
             self.end_headers()
             self.wfile.write(yaml_bytes)
@@ -1020,7 +1020,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         if path == "/api/nodes":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
-            target_group = query.get("group", [""])[0] or None
+            target_group = urllib.parse.unquote(query.get("group", [""])[0]).strip() or None
             try:
                 mgr = XuiManager()
                 nodes = mgr.list_relay_nodes(target_group=target_group)
@@ -1038,7 +1038,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         if path == "/api/clash/export":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
-            target_group = query.get("group", [""])[0] or None
+            target_group = urllib.parse.unquote(query.get("group", [""])[0]).strip() or None
             try:
                 mgr = XuiManager()
                 nodes = mgr.list_relay_nodes(target_group=target_group)
@@ -1059,7 +1059,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         if path == "/api/export":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
-            target_group = query.get("group", [""])[0] or None
+            target_group = urllib.parse.unquote(query.get("group", [""])[0]).strip() or None
             try:
                 mgr = XuiManager()
                 nodes = mgr.list_relay_nodes(target_group=target_group)
