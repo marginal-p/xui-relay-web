@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-x-ui 静态IP中转节点 Web 管理服务
-支持单节点/批量导入 Socks5 静态IP，自动生成 VLESS+Reality 落地中转节点，并提供现代化网页管理界面。
+x-ui 全协议中转节点 Web 管理服务
+支持将 Socks5 / VMess / VLESS / Trojan / Shadowsocks / HTTP 落地节点
+一键封装为统一的 VLESS + Reality 落地中转节点，并提供现代化网页管理面板。
 """
 
 import os
@@ -13,6 +14,7 @@ import time
 import socket
 import sqlite3
 import secrets
+import base64
 import urllib.parse
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -28,7 +30,6 @@ XRAY_BIN = "/usr/local/x-ui/bin/xray-linux-amd64"
 DEFAULT_DB_PATH = "/etc/x-ui-yg/x-ui-yg.db"
 DEFAULT_SNI = "apple.com"
 
-# 全局内存会话存储
 SESSIONS = set()
 
 def load_config():
@@ -55,14 +56,6 @@ def save_config(cfg):
 CURRENT_CONFIG = load_config()
 
 def detect_server_ip():
-    """获取本机外网公网IP"""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        pass
     try:
         import urllib.request
         req = urllib.request.Request("https://api.ipify.org", headers={"User-Agent": "curl/7.88.1"})
@@ -80,7 +73,7 @@ CURRENT_CONFIG["server_ip"] = detect_server_ip()
 class XrayHelper:
     @staticmethod
     def generate_x25519():
-        """生成 X25519 密钥对"""
+        """调用 Xray 核心生成真实配对的 X25519 密钥对"""
         if os.path.exists(XRAY_BIN):
             try:
                 res = subprocess.run([XRAY_BIN, "x25519"], capture_output=True, text=True, timeout=5)
@@ -106,39 +99,274 @@ class XrayHelper:
     def generate_short_id():
         return secrets.token_hex(4)
 
-# ==================== Socks5 解析器 ====================
-class Socks5Parser:
+# ==================== 通用全协议节点解析器 ====================
+class NodeParser:
     @staticmethod
-    def parse(line: str):
+    def parse(raw: str):
         """
-        支持格式：
-        1. 82.110.39.8:7610:user:pass
-        2. user:pass@82.110.39.8:7610
-        3. socks5://user:pass@82.110.39.8:7610
-        4. socks5://82.110.39.8:7610
-        5. 82.110.39.8:7610
+        支持智能解析：
+        1. vmess://<base64>
+        2. vless://<uuid>@<host>:<port>?...#remark
+        3. trojan://<password>@<host>:<port>?...#remark
+        4. ss://<base64>#remark 或 ss://method:pass@host:port#remark
+        5. http://user:pass@host:port 或 http://host:port
+        6. socks5://user:pass@host:port 或 ip:port:user:pass 或 ip:port
         """
-        line = line.strip()
-        if not line:
+        raw = (raw or "").strip()
+        if not raw:
             return None
-        
-        if line.startswith("socks5://"):
-            line = line[9:]
-        elif line.startswith("socks://"):
-            line = line[8:]
 
-        host = ""
+        # 1. VMess
+        if raw.startswith("vmess://"):
+            b64_str = raw[8:].strip()
+            missing_padding = len(b64_str) % 4
+            if missing_padding != 0:
+                b64_str += '=' * (4 - missing_padding)
+            data = json.loads(base64.b64decode(b64_str).decode('utf-8'))
+            host = data.get("add", "").strip()
+            port = int(data.get("port", 0))
+            uuid_str = data.get("id", "").strip()
+            alter_id = int(data.get("aid", 0))
+            security = data.get("scy", "auto") or "auto"
+            network = data.get("net", "tcp") or "tcp"
+            path = data.get("path", "")
+            ws_host = data.get("host", "")
+            tls = data.get("tls", "")
+            remark = data.get("ps", host) or host
+
+            outbound_tag = f"vmess-{host}-{port}"
+            outbound = {
+                "tag": outbound_tag,
+                "protocol": "vmess",
+                "settings": {
+                    "vnext": [{
+                        "address": host,
+                        "port": port,
+                        "users": [{
+                            "id": uuid_str,
+                            "alterId": alter_id,
+                            "security": security
+                        }]
+                    }]
+                }
+            }
+            stream = {"network": network}
+            if tls == "tls":
+                stream["security"] = "tls"
+                stream["tlsSettings"] = {"serverName": data.get("sni", ws_host or host)}
+            else:
+                stream["security"] = "none"
+
+            if network == "ws":
+                ws_settings = {}
+                if path:
+                    ws_settings["path"] = path
+                if ws_host:
+                    ws_settings["headers"] = {"Host": ws_host}
+                if ws_settings:
+                    stream["wsSettings"] = ws_settings
+
+            outbound["streamSettings"] = stream
+            return {
+                "protocol": "vmess",
+                "host": host,
+                "port": port,
+                "remark": remark,
+                "outbound_tag": outbound_tag,
+                "outbound": outbound,
+                "display": f"VMess ({network}) {host}:{port}"
+            }
+
+        # 2. VLESS
+        if raw.startswith("vless://"):
+            u = urllib.parse.urlparse(raw)
+            uuid_str = u.username
+            host = u.hostname
+            port = u.port or 443
+            remark = urllib.parse.unquote(u.fragment) or host
+            params = urllib.parse.parse_qs(u.query)
+            network = params.get("type", ["tcp"])[0]
+            security = params.get("security", ["none"])[0]
+            sni = params.get("sni", [""])[0] or host
+
+            outbound_tag = f"vless-{host}-{port}"
+            outbound = {
+                "tag": outbound_tag,
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [{
+                        "address": host,
+                        "port": port,
+                        "users": [{
+                            "id": uuid_str,
+                            "encryption": params.get("encryption", ["none"])[0]
+                        }]
+                    }]
+                },
+                "streamSettings": {
+                    "network": network,
+                    "security": security
+                }
+            }
+            if security == "reality":
+                outbound["streamSettings"]["realitySettings"] = {
+                    "serverName": sni,
+                    "publicKey": params.get("pbk", [""])[0],
+                    "shortId": params.get("sid", [""])[0],
+                    "fingerprint": params.get("fp", ["chrome"])[0]
+                }
+            elif security == "tls":
+                outbound["streamSettings"]["tlsSettings"] = {
+                    "serverName": sni
+                }
+            return {
+                "protocol": "vless",
+                "host": host,
+                "port": port,
+                "remark": remark,
+                "outbound_tag": outbound_tag,
+                "outbound": outbound,
+                "display": f"VLESS ({security}) {host}:{port}"
+            }
+
+        # 3. Trojan
+        if raw.startswith("trojan://"):
+            u = urllib.parse.urlparse(raw)
+            pwd = u.username or ""
+            host = u.hostname
+            port = u.port or 443
+            remark = urllib.parse.unquote(u.fragment) or host
+            params = urllib.parse.parse_qs(u.query)
+            sni = params.get("sni", [""])[0] or params.get("peer", [""])[0] or host
+
+            outbound_tag = f"trojan-{host}-{port}"
+            outbound = {
+                "tag": outbound_tag,
+                "protocol": "trojan",
+                "settings": {
+                    "servers": [{
+                        "address": host,
+                        "port": port,
+                        "password": pwd
+                    }]
+                },
+                "streamSettings": {
+                    "security": "tls",
+                    "tlsSettings": {
+                        "serverName": sni
+                    }
+                }
+            }
+            return {
+                "protocol": "trojan",
+                "host": host,
+                "port": port,
+                "remark": remark,
+                "outbound_tag": outbound_tag,
+                "outbound": outbound,
+                "display": f"Trojan {host}:{port}"
+            }
+
+        # 4. Shadowsocks
+        if raw.startswith("ss://"):
+            body = raw[5:]
+            remark = host = ""
+            if "#" in body:
+                body, remark = body.split("#", 1)
+                remark = urllib.parse.unquote(remark)
+            if "@" in body:
+                auth_part, hp_part = body.split("@", 1)
+                try:
+                    missing_padding = len(auth_part) % 4
+                    if missing_padding != 0: auth_part += '=' * (4 - missing_padding)
+                    decoded_auth = base64.b64decode(auth_part).decode()
+                    if ":" in decoded_auth:
+                        method, pwd = decoded_auth.split(":", 1)
+                    else:
+                        method, pwd = auth_part.split(":", 1)
+                except Exception:
+                    method, pwd = auth_part.split(":", 1)
+                host, port_str = hp_part.split(":", 1)
+                port = int(port_str.split("/")[0])
+            else:
+                missing_padding = len(body) % 4
+                if missing_padding != 0: body += '=' * (4 - missing_padding)
+                decoded = base64.b64decode(body).decode()
+                auth_part, hp = decoded.split("@", 1)
+                method, pwd = auth_part.split(":", 1)
+                host, port_str = hp.split(":", 1)
+                port = int(port_str.split("/")[0])
+
+            remark = remark or host
+            outbound_tag = f"ss-{host}-{port}"
+            outbound = {
+                "tag": outbound_tag,
+                "protocol": "shadowsocks",
+                "settings": {
+                    "servers": [{
+                        "address": host,
+                        "port": port,
+                        "method": method,
+                        "password": pwd
+                    }]
+                }
+            }
+            return {
+                "protocol": "shadowsocks",
+                "host": host,
+                "port": port,
+                "remark": remark,
+                "outbound_tag": outbound_tag,
+                "outbound": outbound,
+                "display": f"Shadowsocks {host}:{port}"
+            }
+
+        # 5. HTTP
+        if raw.startswith("http://"):
+            line = raw[7:]
+            user = pwd = ""
+            if "@" in line:
+                auth, hp = line.split("@", 1)
+                if ":" in auth: user, pwd = auth.split(":", 1)
+                else: user = auth
+                h, p = hp.split(":", 1)
+                host = h
+                port = int(p.split("/")[0])
+            else:
+                h, p = line.split(":", 1)
+                host = h
+                port = int(p.split("/")[0])
+            outbound_tag = f"http-{host}-{port}"
+            srv_obj = {"address": host, "port": port}
+            if user or pwd:
+                srv_obj["users"] = [{"user": user, "pass": pwd}]
+            outbound = {
+                "tag": outbound_tag,
+                "protocol": "http",
+                "settings": {"servers": [srv_obj]}
+            }
+            return {
+                "protocol": "http",
+                "host": host,
+                "port": port,
+                "user": user,
+                "pass": pwd,
+                "remark": host,
+                "outbound_tag": outbound_tag,
+                "outbound": outbound,
+                "display": f"HTTP {host}:{port}"
+            }
+
+        # 6. Socks5 / 纯 IP:Port:User:Pass
+        line = raw
+        if line.startswith("socks5://"): line = line[9:]
+        elif line.startswith("socks://"): line = line[8:]
+        host = user = pwd = ""
         port = 0
-        user = ""
-        pwd = ""
-
-        # Check user:pass@host:port
         if "@" in line:
             auth_part, host_part = line.split("@", 1)
-            if ":" in auth_part:
-                user, pwd = auth_part.split(":", 1)
-            else:
-                user = auth_part
+            if ":" in auth_part: user, pwd = auth_part.split(":", 1)
+            else: user = auth_part
             if ":" in host_part:
                 h, p = host_part.split(":", 1)
                 host = h
@@ -148,101 +376,105 @@ class Socks5Parser:
         else:
             parts = line.split(":")
             if len(parts) == 4:
-                host = parts[0]
-                port = int(parts[1])
-                user = parts[2]
-                pwd = parts[3]
+                host = parts[0]; port = int(parts[1]); user = parts[2]; pwd = parts[3]
             elif len(parts) == 2:
-                host = parts[0]
-                port = int(parts[1].split("/")[0])
+                host = parts[0]; port = int(parts[1].split("/")[0])
             elif len(parts) == 3:
-                host = parts[0]
-                port = int(parts[1])
-                user = parts[2]
+                host = parts[0]; port = int(parts[1]); user = parts[2]
             else:
                 return None
 
+        outbound_tag = f"socks5-{host}-{port}"
+        srv_obj = {"address": host, "port": port}
+        if user or pwd:
+            srv_obj["users"] = [{"user": user, "pass": pwd}]
+        outbound = {
+            "tag": outbound_tag,
+            "protocol": "socks",
+            "settings": {"servers": [srv_obj]}
+        }
         return {
-            "host": host.strip(),
-            "port": int(port),
-            "user": user.strip(),
-            "pass": pwd.strip()
+            "protocol": "socks",
+            "host": host,
+            "port": port,
+            "user": user,
+            "pass": pwd,
+            "remark": host,
+            "outbound_tag": outbound_tag,
+            "outbound": outbound,
+            "display": f"Socks5 {host}:{port}"
         }
 
-# ==================== Socks5 连通性测试 ====================
-def test_socks5_connectivity(host, port, user="", pwd="", timeout=5):
-    """原生 socket 测试 Socks5 连通性与真实出口公网IP"""
+# ==================== 节点连通性测试 ====================
+def test_node_connectivity(node_data, timeout=5):
+    """通用连通性测试：Socks5协议执行原生握手测试，其他协议执行TCP端口握手"""
+    protocol = node_data.get("protocol", "tcp")
+    host = node_data.get("host")
+    port = int(node_data.get("port", 0))
+    user = node_data.get("user", "")
+    pwd = node_data.get("pass", "")
+
+    if protocol == "socks":
+        # 原生 Socks5 握手测试
+        start_time = time.time()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect((host, port))
+            if user and pwd:
+                s.sendall(b"\x05\x02\x00\x02")
+                resp = s.recv(2)
+                if len(resp) < 2 or resp[0] != 0x05:
+                    return {"ok": False, "error": "Socks5握手失败"}
+                if resp[1] == 0x02:
+                    u_b, p_b = user.encode(), pwd.encode()
+                    s.sendall(b"\x01" + bytes([len(u_b)]) + u_b + bytes([len(p_b)]) + p_b)
+                    auth_resp = s.recv(2)
+                    if len(auth_resp) < 2 or auth_resp[1] != 0x00:
+                        return {"ok": False, "error": "Socks5认证失败(密码错误)"}
+            else:
+                s.sendall(b"\x05\x01\x00")
+                resp = s.recv(2)
+                if len(resp) < 2 or resp[0] != 0x05 or resp[1] != 0x00:
+                    return {"ok": False, "error": "需要认证或握手失败"}
+
+            domain = b"api.ipify.org"
+            s.sendall(b"\x05\x01\x00\x03" + bytes([len(domain)]) + domain + (80).to_bytes(2, "big"))
+            connect_resp = s.recv(10)
+            if len(connect_resp) < 4 or connect_resp[1] != 0x00:
+                return {"ok": False, "error": "目标连接失败"}
+
+            s.sendall(b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n")
+            http_resp = s.recv(1024)
+            elapsed = int((time.time() - start_time) * 1000)
+            s.close()
+            exit_ip = ""
+            content = http_resp.decode(errors="replace")
+            if "\r\n\r\n" in content:
+                exit_ip = content.split("\r\n\r\n", 1)[1].strip().splitlines()[0].strip()
+            return {"ok": True, "latency": elapsed, "exit_ip": exit_ip or host}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            try: s.close()
+            except Exception: pass
+
+    # 其他协议进行 TCP 握手探测
     start_time = time.time()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     try:
         s.connect((host, port))
-        # 1. 协商认证
-        if user and pwd:
-            s.sendall(b"\x05\x02\x00\x02") # 允许无需认证或用户名密码认证
-            resp = s.recv(2)
-            if len(resp) < 2 or resp[0] != 0x05:
-                return {"ok": False, "error": "Socks5 handshake failed"}
-            if resp[1] == 0x02: # 需要用户名密码
-                u_b = user.encode()
-                p_b = pwd.encode()
-                auth_req = b"\x01" + bytes([len(u_b)]) + u_b + bytes([len(p_b)]) + p_b
-                s.sendall(auth_req)
-                auth_resp = s.recv(2)
-                if len(auth_resp) < 2 or auth_resp[1] != 0x00:
-                    return {"ok": False, "error": "Socks5 auth failed (wrong username/pass)"}
-            elif resp[1] != 0x00:
-                return {"ok": False, "error": "No acceptable authentication methods"}
-        else:
-            s.sendall(b"\x05\x01\x00")
-            resp = s.recv(2)
-            if len(resp) < 2 or resp[0] != 0x05 or resp[1] != 0x00:
-                return {"ok": False, "error": "Socks5 requires authentication"}
-
-        # 2. 发起 CONNECT 请求至 api.ipify.org:80 (IPv4: 104.26.12.205 / 172.67.74.152)
-        # 用域名连接
-        domain = b"api.ipify.org"
-        req = b"\x05\x01\x00\x03" + bytes([len(domain)]) + domain + (80).to_bytes(2, "big")
-        s.sendall(req)
-        connect_resp = s.recv(10)
-        if len(connect_resp) < 4 or connect_resp[1] != 0x00:
-            return {"ok": False, "error": f"Socks5 connect target failed: rep={connect_resp[1] if len(connect_resp)>1 else 'none'}"}
-
-        # 3. 发送 HTTP 请求获取出口IP
-        http_get = b"GET / HTTP/1.1\r\nHost: api.ipify.org\r\nUser-Agent: curl/7.88.1\r\nConnection: close\r\n\r\n"
-        s.sendall(http_get)
-        http_resp = b""
-        while True:
-            chunk = s.recv(1024)
-            if not chunk:
-                break
-            http_resp += chunk
-        
         elapsed = int((time.time() - start_time) * 1000)
         s.close()
-
-        # 解析出口IP
-        content = http_resp.decode(errors="replace")
-        exit_ip = ""
-        if "\r\n\r\n" in content:
-            body = content.split("\r\n\r\n", 1)[1].strip()
-            exit_ip = body.splitlines()[0].strip() if body else ""
-        return {
-            "ok": True,
-            "latency": elapsed,
-            "exit_ip": exit_ip or host
-        }
-    except socket.timeout:
-        return {"ok": False, "error": "Connection timed out"}
+        return {"ok": True, "latency": elapsed, "exit_ip": host}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"端口连接失败: {e}"}
     finally:
-        try:
-            s.close()
-        except Exception:
-            pass
+        try: s.close()
+        except Exception: pass
 
-# ==================== x-ui 数据库与服务管理 ====================
+# ==================== x-ui 数据库管理 ====================
 class XuiManager:
     def __init__(self, db_path=None):
         self.db_path = db_path or CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH)
@@ -251,7 +483,6 @@ class XuiManager:
         return sqlite3.connect(self.db_path)
 
     def restart_xui(self):
-        """重启 x-ui 使其编译最新 config.json 并生效"""
         try:
             subprocess.run(["systemctl", "restart", "x-ui"], check=True, timeout=10)
             return True, "x-ui 重启成功"
@@ -270,7 +501,6 @@ class XuiManager:
         cursor.execute("UPDATE settings SET value=? WHERE key='xrayTemplateConfig';", (json_str,))
 
     def get_used_ports(self):
-        """获取所有已占用的端口（包含数据库及系统占用）"""
         used = set()
         try:
             conn = self.get_connection()
@@ -288,13 +518,10 @@ class XuiManager:
         if preferred_port and 1024 <= preferred_port <= 65535:
             if preferred_port not in used:
                 return preferred_port
-        
-        # 随机挑选 20000 ~ 60000
         import random
         for _ in range(100):
             p = random.randint(20000, 60000)
             if p not in used:
-                # 检查操作系统中是否监听
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
                     s.bind(("0.0.0.0", p))
@@ -305,17 +532,14 @@ class XuiManager:
         raise Exception("无法在 20000-60000 范围找到空闲端口")
 
     def list_relay_nodes(self):
-        """获取所有中转节点列表"""
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
-        # 读 template config 的 routing 和 outbounds
         template = self.get_template_config(c)
         rules = template.get("routing", {}).get("rules", [])
         outbounds = {o.get("tag"): o for o in template.get("outbounds", []) if o.get("tag")}
 
-        # 建立 inboundTag -> outbound 映射
         inbound_to_outbound = {}
         for r in rules:
             in_tags = r.get("inboundTag", [])
@@ -335,16 +559,11 @@ class XuiManager:
         for row in inbound_rows:
             tag = row["tag"]
             out_info = inbound_to_outbound.get(tag)
-            
-            # 解析 settings 与 stream_settings
-            try:
-                in_settings = json.loads(row["settings"])
-            except Exception:
-                in_settings = {}
-            try:
-                in_streams = json.loads(row["stream_settings"])
-            except Exception:
-                in_streams = {}
+
+            try: in_settings = json.loads(row["settings"])
+            except Exception: in_settings = {}
+            try: in_streams = json.loads(row["stream_settings"])
+            except Exception: in_streams = {}
 
             clients = in_settings.get("clients", [])
             client_id = clients[0].get("id", "") if clients else ""
@@ -359,24 +578,44 @@ class XuiManager:
             remark = row["remark"] or f"relay-{row['port']}"
             port = row["port"]
 
-            # 构建 vless link
             vless_link = f"vless://{client_id}@{server_ip}:{port}?security=reality&encryption=none&pbk={pub_key}&headerType=none&fp=chrome&type=tcp&sni={sni}&sid={sid}#{urllib.parse.quote(remark)}"
 
-            socks5_info = None
-            if out_info and out_info.get("protocol") == "socks":
-                servers = out_info.get("settings", {}).get("servers", [{}])
-                if servers:
-                    srv = servers[0]
-                    users = srv.get("users", [{}])
-                    u = users[0].get("user", "") if users else ""
-                    p = users[0].get("pass", "") if users else ""
-                    socks5_info = {
-                        "host": srv.get("address", ""),
-                        "port": srv.get("port", 0),
-                        "user": u,
-                        "pass": p,
-                        "tag": out_info.get("tag", "")
-                    }
+            node_outbound_info = None
+            if out_info:
+                proto = out_info.get("protocol", "unknown")
+                display = f"{proto.upper()} [{out_info.get('tag')}]"
+                target_host = ""
+                target_port = 0
+                user_str = ""
+
+                # 提取目标地址
+                if proto in ("socks", "http", "shadowsocks", "trojan"):
+                    srvs = out_info.get("settings", {}).get("servers", [{}])
+                    if srvs:
+                        target_host = srvs[0].get("address", "")
+                        target_port = srvs[0].get("port", 0)
+                        users = srvs[0].get("users", [{}])
+                        if users: user_str = users[0].get("user", "")
+                elif proto in ("vmess", "vless"):
+                    vnext = out_info.get("settings", {}).get("vnext", [{}])
+                    if vnext:
+                        target_host = vnext[0].get("address", "")
+                        target_port = vnext[0].get("port", 0)
+
+                net = out_info.get("streamSettings", {}).get("network", "")
+                if net:
+                    display = f"{proto.upper()} ({net}) {target_host}:{target_port}"
+                elif target_host:
+                    display = f"{proto.upper()} {target_host}:{target_port}"
+
+                node_outbound_info = {
+                    "protocol": proto,
+                    "host": target_host,
+                    "port": target_port,
+                    "user": user_str,
+                    "tag": out_info.get("tag", ""),
+                    "display": display
+                }
 
             nodes.append({
                 "id": row["id"],
@@ -392,78 +631,52 @@ class XuiManager:
                 "short_id": sid,
                 "sni": sni,
                 "vless_link": vless_link,
-                "is_relay": socks5_info is not None,
-                "socks5": socks5_info
+                "is_relay": node_outbound_info is not None,
+                "outbound": node_outbound_info
             })
 
         return nodes
 
-    def add_relay_node(self, socks_data, remark=None, custom_port=None, sni=None):
-        """
-        核心方法：一键添加中转节点
-        socks_data: dict {"host": ..., "port": ..., "user": ..., "pass": ...}
-        """
-        host = socks_data["host"]
-        sport = socks_data["port"]
-        user = socks_data.get("user", "")
-        pwd = socks_data.get("pass", "")
+    def add_relay_node(self, node_info, remark=None, custom_port=None, sni=None):
+        """核心方法：一键添加中转节点 (支持全协议)"""
+        outbound_tag = node_info["outbound_tag"]
+        new_outbound = node_info["outbound"]
+        host = node_info.get("host", "")
+        remark = remark or node_info.get("remark") or host
 
         conn = self.get_connection()
         c = conn.cursor()
 
         try:
-            # 1. 分配端口
             port = self.allocate_port(custom_port)
             inbound_tag = f"inbound-{port}"
-            outbound_tag = f"socks5-{host}-{sport}"
             sni = sni or CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
-            remark = remark or host
 
-            # 2. 生成密钥、UUID、ShortID
             priv_key, pub_key = XrayHelper.generate_x25519()
             client_id = XrayHelper.generate_uuid()
             sid = XrayHelper.generate_short_id()
 
-            # 3. 更新 xrayTemplateConfig (outbounds & routing)
             template = self.get_template_config(c)
             outbounds = template.get("outbounds", [])
             rules = template.get("routing", {}).get("rules", [])
 
-            # 检查是否已存在同名 outboundTag，不存在则追加
-            existing_outbound = None
-            for o in outbounds:
-                if o.get("tag") == outbound_tag:
-                    existing_outbound = o
-                    break
+            # 替换或添加 outbound
+            outbounds = [o for o in outbounds if o.get("tag") != outbound_tag]
+            outbounds.append(new_outbound)
+            template["outbounds"] = outbounds
 
-            if not existing_outbound:
-                srv_obj = {"address": host, "port": int(sport)}
-                if user or pwd:
-                    srv_obj["users"] = [{"user": user, "pass": pwd}]
-                new_outbound = {
-                    "tag": outbound_tag,
-                    "protocol": "socks",
-                    "settings": {
-                        "servers": [srv_obj]
-                    }
-                }
-                outbounds.append(new_outbound)
-                template["outbounds"] = outbounds
-
-            # 在 rules 前部优先插入精准路由规则
+            # 插入精准路由规则
             new_rule = {
                 "type": "field",
                 "inboundTag": [inbound_tag],
                 "outboundTag": outbound_tag
             }
-            # 移除冲突的旧规则（如果存在）
             rules = [r for r in rules if r.get("inboundTag") != [inbound_tag]]
             rules.insert(0, new_rule)
             template["routing"]["rules"] = rules
 
             self.save_template_config(c, template)
 
-            # 4. 插入 inbounds 表
             in_settings = {
                 "clients": [{"id": client_id, "flow": ""}],
                 "decryption": "none",
@@ -514,7 +727,6 @@ class XuiManager:
             conn.commit()
             conn.close()
 
-            # 5. 重启 x-ui
             self.restart_xui()
 
             server_ip = CURRENT_CONFIG.get("server_ip", SERVER_IP)
@@ -529,12 +741,7 @@ class XuiManager:
                 "short_id": sid,
                 "sni": sni,
                 "vless_link": vless_link,
-                "socks5": {
-                    "host": host,
-                    "port": sport,
-                    "user": user,
-                    "pass": pwd
-                }
+                "outbound": node_info
             }
         except Exception as e:
             conn.rollback()
@@ -542,7 +749,6 @@ class XuiManager:
             raise e
 
     def delete_node(self, inbound_id):
-        """一键级联删除中转节点"""
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -555,13 +761,10 @@ class XuiManager:
                 return False, "未找到该入站节点"
 
             inbound_tag = inbound["tag"]
-
-            # 清理 template config 规则
             template = self.get_template_config(c)
             rules = template.get("routing", {}).get("rules", [])
             outbounds = template.get("outbounds", [])
 
-            # 找到关联的 outboundTag
             matched_outbounds = set()
             new_rules = []
             for r in rules:
@@ -571,7 +774,6 @@ class XuiManager:
                     new_rules.append(r)
             template["routing"]["rules"] = new_rules
 
-            # 检查是否有其它 rule 引用这些 outboundTag，若没有则清理 outbound
             for out_tag in matched_outbounds:
                 still_used = False
                 for r in new_rules:
@@ -584,12 +786,10 @@ class XuiManager:
 
             self.save_template_config(c, template)
 
-            # 删除 inbounds 记录
             c.execute("DELETE FROM inbounds WHERE id=?;", (inbound_id,))
             conn.commit()
             conn.close()
 
-            # 重启 x-ui
             self.restart_xui()
             return True, "删除成功并已重载配置"
         except Exception as e:
@@ -605,6 +805,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
         self.end_headers()
+
     def send_json(self, data, status=200, cookie=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -631,17 +832,6 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/status":
-            if not self.is_authenticated():
-                return self.send_json({"error": "Unauthorized", "auth": False}, 401)
-            return self.send_json({
-                "auth": True,
-                "server_ip": CURRENT_CONFIG.get("server_ip", SERVER_IP),
-                "port": CURRENT_CONFIG.get("port", DEFAULT_PORT),
-                "db_path": CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH),
-                "default_sni": CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
-            })
-
         if path == "/api/qrcode":
             query = urllib.parse.parse_qs(parsed.query)
             txt = query.get("text", [""])[0]
@@ -664,6 +854,17 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        if path == "/api/status":
+            if not self.is_authenticated():
+                return self.send_json({"error": "Unauthorized", "auth": False}, 401)
+            return self.send_json({
+                "auth": True,
+                "server_ip": CURRENT_CONFIG.get("server_ip", SERVER_IP),
+                "port": CURRENT_CONFIG.get("port", DEFAULT_PORT),
+                "db_path": CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH),
+                "default_sni": CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
+            })
+
         if path == "/api/nodes":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
@@ -685,7 +886,6 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.send_json({"success": False, "error": str(e)}, 500)
 
-        # 静态文件或主页
         if path in ("/", "/index.html"):
             tmpl_path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
             if os.path.exists(tmpl_path):
@@ -714,8 +914,8 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             params = {}
 
         if path == "/api/login":
-            u = params.get("username", "").strip()
-            p = params.get("password", "").strip()
+            u = (params.get("username") or "").strip()
+            p = (params.get("password") or "").strip()
             if u == CURRENT_CONFIG.get("username") and p == CURRENT_CONFIG.get("password"):
                 token = secrets.token_hex(24)
                 SESSIONS.add(token)
@@ -726,28 +926,25 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         if path == "/api/logout":
             return self.send_json({"success": True}, cookie="relay_session=deleted; Path=/; Max-Age=0")
 
-        # 鉴权
         if not self.is_authenticated():
             return self.send_json({"error": "Unauthorized"}, 401)
 
         if path == "/api/nodes/add":
-            raw_socks = (params.get("socks5_str") or "").strip()
+            raw_input = (params.get("socks5_str") or params.get("node_str") or "").strip()
             remark = (params.get("remark") or "").strip() or None
             custom_port = params.get("port")
             if custom_port:
-                try:
-                    custom_port = int(custom_port)
-                except Exception:
-                    custom_port = None
+                try: custom_port = int(custom_port)
+                except Exception: custom_port = None
             sni = (params.get("sni") or "").strip() or None
 
-            parsed_socks = Socks5Parser.parse(raw_socks)
-            if not parsed_socks:
-                return self.send_json({"success": False, "error": "无法解析Socks5地址格式，请检查输入"}, 400)
+            parsed_node = NodeParser.parse(raw_input)
+            if not parsed_node:
+                return self.send_json({"success": False, "error": "无法识别此节点格式，支持 Socks5/VMess/VLESS/Trojan/SS/HTTP"}, 400)
 
             try:
                 mgr = XuiManager()
-                res = mgr.add_relay_node(parsed_socks, remark=remark, custom_port=custom_port, sni=sni)
+                res = mgr.add_relay_node(parsed_node, remark=remark, custom_port=custom_port, sni=sni)
                 return self.send_json({"success": True, "node": res})
             except Exception as e:
                 return self.send_json({"success": False, "error": str(e)}, 500)
@@ -764,15 +961,15 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             errors = []
 
             for line in lines:
-                parsed_socks = Socks5Parser.parse(line)
-                if not parsed_socks:
-                    errors.append(f"解析失败: {line}")
+                parsed_node = NodeParser.parse(line)
+                if not parsed_node:
+                    errors.append(f"解析失败: {line[:30]}...")
                     continue
                 try:
-                    res = mgr.add_relay_node(parsed_socks, sni=sni)
+                    res = mgr.add_relay_node(parsed_node, sni=sni)
                     success_nodes.append(res)
                 except Exception as e:
-                    errors.append(f"{line} 添加失败: {e}")
+                    errors.append(f"添加失败: {e}")
 
             return self.send_json({
                 "success": True,
@@ -791,25 +988,36 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             return self.send_json({"success": ok, "msg": msg})
 
         if path == "/api/nodes/test":
+            raw_input = (params.get("node_str") or params.get("socks5_str") or "").strip()
             host = (params.get("host") or "").strip()
-            port = int(params.get("port", 0))
+            port = int(params.get("port") or 0)
             user = str(params.get("user") or "")
             pwd = str(params.get("pass") or "")
-            if not host or not port:
-                return self.send_json({"success": False, "error": "缺少主机或端口"}, 400)
-            test_res = test_socks5_connectivity(host, port, user, pwd)
+            proto = (params.get("protocol") or "socks").strip()
+
+            if raw_input:
+                parsed_node = NodeParser.parse(raw_input)
+                if parsed_node:
+                    test_res = test_node_connectivity(parsed_node)
+                    return self.send_json({"success": True, "result": test_res})
+
+            node_data = {
+                "protocol": proto,
+                "host": host,
+                "port": port,
+                "user": user,
+                "pass": pwd
+            }
+            test_res = test_node_connectivity(node_data)
             return self.send_json({"success": True, "result": test_res})
 
         if path == "/api/settings/update":
             new_u = (params.get("username") or "").strip()
             new_p = (params.get("password") or "").strip()
             new_sni = (params.get("default_sni") or "").strip()
-            if new_u:
-                CURRENT_CONFIG["username"] = new_u
-            if new_p:
-                CURRENT_CONFIG["password"] = new_p
-            if new_sni:
-                CURRENT_CONFIG["default_sni"] = new_sni
+            if new_u: CURRENT_CONFIG["username"] = new_u
+            if new_p: CURRENT_CONFIG["password"] = new_p
+            if new_sni: CURRENT_CONFIG["default_sni"] = new_sni
             save_config(CURRENT_CONFIG)
             return self.send_json({"success": True, "msg": "配置已更新"})
 
@@ -823,7 +1031,7 @@ def run_server():
     listen = cfg.get("listen", "0.0.0.0")
     server = ThreadedHTTPServer((listen, port), RelayWebHandler)
     print(f"==================================================")
-    print(f" x-ui 静态IP中转管理 Web 系统 已启动")
+    print(f" x-ui 全协议中转管理 Web 系统 已启动")
     print(f" 访问地址: http://{cfg.get('server_ip', '127.0.0.1')}:{port}")
     print(f" 初始账号: {cfg.get('username')}")
     print(f" 初始密码: {cfg.get('password')}")

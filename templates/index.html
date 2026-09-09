@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>x-ui 静态IP中转管理面板</title>
+  <title>x-ui 全协议落地中转管理面板</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -15,7 +15,6 @@
       flex-direction: column;
     }
     
-    /* 顶部导航 */
     .navbar {
       background: rgba(15, 23, 42, 0.9);
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -59,7 +58,6 @@
       color: #94a3b8;
     }
 
-    /* 容器布局 */
     .main-wrap {
       max-width: 1200px;
       width: 100%;
@@ -68,7 +66,6 @@
       flex: 1;
     }
 
-    /* 卡片系统 */
     .card {
       background: #131b2e;
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -98,13 +95,12 @@
       padding: 1.25rem;
     }
 
-    /* 统计网格 */
     .stat-row {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 1rem;
       margin-bottom: 1.5rem;
-    }}
+    }
     .stat-card {
       background: #131b2e;
       border: 1px solid rgba(255, 255, 255, 0.08);
@@ -135,7 +131,6 @@
       color: #ffffff;
     }
 
-    /* 表单元素 */
     .form-item {
       margin-bottom: 1rem;
     }
@@ -165,7 +160,6 @@
       resize: vertical;
     }
 
-    /* 按钮 */
     .btn {
       display: inline-flex;
       align-items: center;
@@ -210,7 +204,6 @@
       border-radius: 6px;
     }
 
-    /* 表格 */
     .table-box {
       overflow-x: auto;
     }
@@ -237,7 +230,6 @@
       background: rgba(255, 255, 255, 0.02);
     }
 
-    /* 登录面板 */
     .login-box {
       max-width: 380px;
       margin: 4rem auto;
@@ -263,7 +255,6 @@
       font-size: 1.6rem;
     }
 
-    /* 弹窗 */
     .modal-mask {
       display: none;
       position: fixed;
@@ -295,7 +286,6 @@
       cursor: pointer;
     }
 
-    /* 选项卡按钮 */
     .tab-group {
       display: flex;
       gap: 0.5rem;
@@ -316,7 +306,23 @@
       border-color: #4f46e5;
     }
 
-    /* Toast 消息框 */
+    .proto-badge {
+      display: inline-block;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      font-family: monospace;
+      margin-right: 0.35rem;
+    }
+    .proto-socks { background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4); }
+    .proto-vmess { background: rgba(168, 85, 247, 0.2); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.4); }
+    .proto-vless { background: rgba(236, 72, 153, 0.2); color: #f472b6; border: 1px solid rgba(236, 72, 153, 0.4); }
+    .proto-trojan { background: rgba(234, 179, 8, 0.2); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.4); }
+    .proto-shadowsocks { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .proto-http { background: rgba(14, 165, 233, 0.2); color: #7dd3fc; border: 1px solid rgba(14, 165, 233, 0.4); }
+
     #toast-bar {
       position: fixed;
       bottom: 1.5rem;
@@ -341,8 +347,8 @@
       <div class="brand">
         <div class="brand-logo">🔀</div>
         <div>
-          <div class="brand-title">x-ui 静态IP中转面板</div>
-          <div class="brand-sub">Socks5 落地 ➔ VLESS + Reality 中转</div>
+          <div class="brand-title">x-ui 全协议落地中转管理面板</div>
+          <div class="brand-sub">VMess / Socks5 / VLESS / Trojan / SS / HTTP ➔ VLESS Reality 中转</div>
         </div>
       </div>
       <div id="nav-actions" style="display:none; align-items:center; gap: 0.75rem;">
@@ -385,7 +391,7 @@
       <div class="stat-card">
         <div class="stat-icon">🌐</div>
         <div>
-          <div class="stat-label">中转节点数</div>
+          <div class="stat-label">已挂载中转节点</div>
           <div class="stat-val" id="stat-count">0</div>
         </div>
       </div>
@@ -406,7 +412,7 @@
       <div class="stat-card">
         <div class="stat-icon" style="color:#c084fc;">🛡️</div>
         <div>
-          <div class="stat-label">前置协议</div>
+          <div class="stat-label">前端统一中转协议</div>
           <div class="stat-val" style="font-size: 1rem; color:#c084fc;">VLESS Reality</div>
         </div>
       </div>
@@ -416,10 +422,10 @@
     <div class="card">
       <div class="card-header">
         <div class="card-title">
-          <span>➕ 添加静态IP中转节点</span>
+          <span>➕ 挂载落地节点转中转</span>
         </div>
         <div class="tab-group">
-          <button id="tab-btn-single" class="tab-item active" onclick="switchTab('single')">单节点添加</button>
+          <button id="tab-btn-single" class="tab-item active" onclick="switchTab('single')">单节点导入</button>
           <button id="tab-btn-batch" class="tab-item" onclick="switchTab('batch')">批量导入</button>
         </div>
       </div>
@@ -429,11 +435,14 @@
         <div id="panel-single">
           <div class="form-item">
             <label class="form-label">
-              Socks5 落地节点地址 <span style="color:#fb7185;">*</span>
+              落地节点链接 / 静态IP <span style="color:#fb7185;">*</span>
+              <span style="font-weight:normal; font-size: 0.75rem; color:#94a3b8; margin-left: 0.5rem;">
+                支持 VMess / VLESS / Trojan / Shadowsocks / Socks5 / HTTP
+              </span>
             </label>
             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
               <input id="input-socks-single" type="text" class="input-text" style="flex:1; min-width: 280px;"
-                     placeholder="支持 82.110.39.8:7610:user:pass 或 socks5://user:pass@ip:port 或 ip:port">
+                     placeholder="粘贴 vmess://... 或 vless://... 或 trojan://... 或 ss://... 或 ip:port:user:pass">
               <button onclick="testSocksInput()" id="btn-test-single" class="btn btn-secondary" style="font-size: 0.8rem;">
                 ⚡ 测试连通性
               </button>
@@ -443,12 +452,12 @@
 
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
             <div>
-              <label class="form-label">自定义中转端口 (留空随机分配)</label>
+              <label class="form-label">自定义中转端口 (留空自动分配)</label>
               <input id="input-port-single" type="number" class="input-text" placeholder="如 42050">
             </div>
             <div>
-              <label class="form-label">节点备注 (留空默认为落地IP)</label>
-              <input id="input-remark-single" type="text" class="input-text" placeholder="如 美国中转-01">
+              <label class="form-label">节点备注 (留空默认为原节点备注或IP)</label>
+              <input id="input-remark-single" type="text" class="input-text" placeholder="如 美国落地-01">
             </div>
             <div>
               <label class="form-label">Reality 伪装域名 (SNI)</label>
@@ -464,9 +473,9 @@
         <!-- 批量导入面板 -->
         <div id="panel-batch" style="display:none;">
           <div class="form-item">
-            <label class="form-label">批量粘贴 Socks5 静态IP（一行一个）</label>
+            <label class="form-label">批量粘贴各类落地节点（一行一个，支持混排）</label>
             <textarea id="input-batch-text" class="input-area" rows="6"
-                      placeholder="82.110.39.8:7610:user1:pass1&#10;82.110.39.9:7610:user2:pass2"></textarea>
+                      placeholder="vmess://ew0KICAidiI6ICIyI...&#10;trojan://password@ip:port...&#10;82.110.39.8:7610:user:pass"></textarea>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
             <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -500,7 +509,7 @@
             <tr>
               <th>备注</th>
               <th>中转端口</th>
-              <th>落地 Socks5 节点</th>
+              <th>落地节点信息</th>
               <th>流量统计 (上/下)</th>
               <th>伪装 SNI</th>
               <th style="text-align: right;">操作</th>
@@ -676,11 +685,24 @@
           totalUp += (n.up || 0);
           totalDown += (n.down || 0);
 
-          let socksHtml = '<span style="color:#64748b; font-style:italic;">默认直连</span>';
-          if (n.socks5) {
-            socksHtml = `<div style="font-family: monospace; font-weight:600; color:#f1f5f9;">${n.socks5.host}:${n.socks5.port}</div>`;
-            if (n.socks5.user) {
-              socksHtml += `<div style="font-size:0.7rem; color:#64748b;">用户: ${n.socks5.user}</div>`;
+          let outHtml = '<span style="color:#64748b; font-style:italic;">默认直连出站</span>';
+          if (n.outbound) {
+            const proto = (n.outbound.protocol || 'socks').toLowerCase();
+            let badgeClass = 'proto-socks';
+            if (proto === 'vmess') badgeClass = 'proto-vmess';
+            else if (proto === 'vless') badgeClass = 'proto-vless';
+            else if (proto === 'trojan') badgeClass = 'proto-trojan';
+            else if (proto === 'shadowsocks') badgeClass = 'proto-shadowsocks';
+            else if (proto === 'http') badgeClass = 'proto-http';
+
+            outHtml = `
+              <div style="font-family: monospace; font-size: 0.8rem;">
+                <span class="proto-badge ${badgeClass}">${proto.toUpperCase()}</span>
+                <span style="font-weight:600; color:#f1f5f9;">${n.outbound.host || '-'}:${n.outbound.port || '-'}</span>
+              </div>
+            `;
+            if (n.outbound.display) {
+              outHtml += `<div style="font-size:0.7rem; color:#94a3b8; margin-top:2px;">${n.outbound.display}</div>`;
             }
           }
 
@@ -693,7 +715,7 @@
                 </div>
               </td>
               <td><span style="font-family:monospace; font-weight:700; color:#a5b4fc; font-size:0.9rem;">${n.port}</span></td>
-              <td>${socksHtml}</td>
+              <td>${outHtml}</td>
               <td style="font-family:monospace; font-size:0.75rem;">
                 <div style="color:#34d399;">⬆ ${formatTraffic(n.up)}</div>
                 <div style="color:#38bdf8;">⬇ ${formatTraffic(n.down)}</div>
@@ -702,7 +724,7 @@
               <td style="text-align:right; white-space:nowrap;">
                 <button onclick="copyVlessText('${n.vless_link}')" class="btn btn-secondary btn-sm" style="color:#a5b4fc;">复制</button>
                 <button onclick="openQrModal(${idx})" class="btn btn-secondary btn-sm">二维码</button>
-                ${n.socks5 ? `<button onclick="testNodeOnline(${idx})" class="btn btn-secondary btn-sm" style="color:#34d399;">测通</button>` : ''}
+                ${n.outbound ? `<button onclick="testNodeOnline(${idx})" class="btn btn-secondary btn-sm" style="color:#34d399;">测通</button>` : ''}
                 <button onclick="removeNode(${n.id}, '${n.remark}')" class="btn btn-danger btn-sm">删除</button>
               </td>
             </tr>
@@ -721,22 +743,8 @@
       const box = document.getElementById('test-info-box');
       const btn = document.getElementById('btn-test-single');
       if (!raw) {
-        showToast('请先输入 Socks5 节点');
+        showToast('请先输入节点链接或静态IP');
         return;
-      }
-
-      let s = raw;
-      if (s.startsWith('socks5://')) s = s.slice(9);
-      let host = '', port = 0, user = '', pwd = '';
-      if (s.includes('@')) {
-        const [auth, hp] = s.split('@');
-        if (auth.includes(':')) [user, pwd] = auth.split(':');
-        else user = auth;
-        if (hp.includes(':')) [host, port] = hp.split(':');
-      } else {
-        const p = s.split(':');
-        if (p.length >= 4) { host = p[0]; port = p[1]; user = p[2]; pwd = p[3]; }
-        else if (p.length >= 2) { host = p[0]; port = p[1]; }
       }
 
       btn.innerText = '探测中...';
@@ -747,7 +755,7 @@
         const res = await fetch('/api/nodes/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host, port: parseInt(port), user, pass: pwd })
+          body: JSON.stringify({ node_str: raw })
         });
         const data = await res.json();
         box.style.display = 'block';
@@ -755,7 +763,7 @@
           box.style.background = 'rgba(16, 185, 129, 0.15)';
           box.style.border = '1px solid rgba(16, 185, 129, 0.3)';
           box.style.color = '#6ee7b7';
-          box.innerText = `✅ 连通正常 | 延迟: ${data.result.latency}ms | 真实出口公网IP: ${data.result.exit_ip}`;
+          box.innerText = `✅ 连通正常 | 延迟: ${data.result.latency}ms | 落地目标: ${data.result.exit_ip}`;
         } else {
           box.style.background = 'rgba(244, 63, 94, 0.15)';
           box.style.border = '1px solid rgba(244, 63, 94, 0.3)';
@@ -781,11 +789,11 @@
       const btn = document.getElementById('btn-add-single');
 
       if (!raw) {
-        showToast('请输入 Socks5 落地节点地址');
+        showToast('请输入落地节点链接或静态IP地址');
         return;
       }
 
-      btn.innerText = '正在生成并重启 x-ui...';
+      btn.innerText = '正在编译并重启 x-ui...';
       btn.disabled = true;
 
       try {
@@ -793,7 +801,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            socks5_str: raw,
+            node_str: raw,
             remark: remark || null,
             port: portVal ? parseInt(portVal) : null,
             sni: sni || 'apple.com'
@@ -801,7 +809,7 @@
         });
         const data = await res.json();
         if (data.success) {
-          showToast('✅ 节点已成功创建并生效！');
+          showToast('✅ 节点已成功挂载并生效！');
           document.getElementById('input-socks-single').value = '';
           document.getElementById('input-port-single').value = '';
           document.getElementById('input-remark-single').value = '';
@@ -826,7 +834,7 @@
       const btn = document.getElementById('btn-add-batch');
 
       if (!text) {
-        showToast('请粘贴至少一行 Socks5 节点');
+        showToast('请粘贴至少一行节点链接');
         return;
       }
 
@@ -877,24 +885,22 @@
 
     async function testNodeOnline(idx) {
       const n = currentNodes[idx];
-      if (!n || !n.socks5) return;
+      if (!n || !n.outbound) return;
       showToast(`正在探测 [${n.remark}]...`);
       try {
         const res = await fetch('/api/nodes/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            host: n.socks5.host,
-            port: n.socks5.port,
-            user: n.socks5.user,
-            pass: n.socks5.pass
+            protocol: n.outbound.protocol,
+            host: n.outbound.host,
+            port: n.outbound.port,
+            user: n.outbound.user
           })
         });
         const data = await res.json();
         if (data.success && data.result.ok) {
-          alert(`✅ [${n.remark}] 连通正常！
-延迟: ${data.result.latency}ms
-出口公网IP: ${data.result.exit_ip}`);
+          alert(`✅ [${n.remark}] 连通正常！\n延迟: ${data.result.latency}ms\n目标地址: ${data.result.exit_ip}`);
         } else {
           alert(`❌ [${n.remark}] 连接失败: ${data.result ? data.result.error : data.error}`);
         }
@@ -954,7 +960,6 @@
       copyVlessText(raw);
     }
 
-    // 页面加载立即执行
     checkLogin();
   </script>
 </body>
