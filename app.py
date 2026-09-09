@@ -4,6 +4,7 @@
 x-ui 全协议中转节点 Web 管理服务
 支持将 Socks5 / VMess / VLESS / Trojan / Shadowsocks / HTTP 落地节点
 一键封装为统一的 VLESS + Reality 落地中转节点，并提供现代化网页管理面板。
+支持节点分组管理与一键导出为 Clash Meta (Mihomo) 配置文件及订阅。
 """
 
 import os
@@ -29,6 +30,7 @@ SERVER_IP = "212.135.38.177"
 XRAY_BIN = "/usr/local/x-ui/bin/xray-linux-amd64"
 DEFAULT_DB_PATH = "/etc/x-ui-yg/x-ui-yg.db"
 DEFAULT_SNI = "apple.com"
+DEFAULT_GROUP = "默认分组"
 
 SESSIONS = set()
 
@@ -46,6 +48,7 @@ def load_config():
         "db_path": DEFAULT_DB_PATH,
         "server_ip": SERVER_IP,
         "default_sni": DEFAULT_SNI,
+        "sub_token": secrets.token_hex(16),
         "listen": "0.0.0.0"
     }
 
@@ -54,6 +57,9 @@ def save_config(cfg):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 CURRENT_CONFIG = load_config()
+if "sub_token" not in CURRENT_CONFIG:
+    CURRENT_CONFIG["sub_token"] = secrets.token_hex(16)
+    save_config(CURRENT_CONFIG)
 
 def detect_server_ip():
     try:
@@ -103,15 +109,6 @@ class XrayHelper:
 class NodeParser:
     @staticmethod
     def parse(raw: str):
-        """
-        支持智能解析：
-        1. vmess://<base64>
-        2. vless://<uuid>@<host>:<port>?...#remark
-        3. trojan://<password>@<host>:<port>?...#remark
-        4. ss://<base64>#remark 或 ss://method:pass@host:port#remark
-        5. http://user:pass@host:port 或 http://host:port
-        6. socks5://user:pass@host:port 或 ip:port:user:pass 或 ip:port
-        """
         raw = (raw or "").strip()
         if not raw:
             return None
@@ -407,7 +404,6 @@ class NodeParser:
 
 # ==================== 节点连通性测试 ====================
 def test_node_connectivity(node_data, timeout=5):
-    """通用连通性测试：Socks5协议执行原生握手测试，其他协议执行TCP端口握手"""
     protocol = node_data.get("protocol", "tcp")
     host = node_data.get("host")
     port = int(node_data.get("port", 0))
@@ -415,7 +411,6 @@ def test_node_connectivity(node_data, timeout=5):
     pwd = node_data.get("pass", "")
 
     if protocol == "socks":
-        # 原生 Socks5 握手测试
         start_time = time.time()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
@@ -459,7 +454,6 @@ def test_node_connectivity(node_data, timeout=5):
             try: s.close()
             except Exception: pass
 
-    # 其他协议进行 TCP 握手探测
     start_time = time.time()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
@@ -474,13 +468,105 @@ def test_node_connectivity(node_data, timeout=5):
         try: s.close()
         except Exception: pass
 
+# ==================== Clash Meta (Mihomo) 配置生成器 ====================
+def generate_clash_meta_yaml(nodes, group_name="全部节点", server_ip=SERVER_IP):
+    lines = []
+    lines.append("# ========================================================")
+    lines.append(f"# Clash Meta (Mihomo) 配置文件 - 分组: {group_name}")
+    lines.append(f"# 服务器: {server_ip} | 节点数量: {len(nodes)}")
+    lines.append("# ========================================================\n")
+    lines.append("port: 7890")
+    lines.append("socks-port: 7891")
+    lines.append("allow-lan: true")
+    lines.append("mode: rule")
+    lines.append("log-level: info")
+    lines.append("external-controller: 127.0.0.1:9090\n")
+    lines.append("dns:")
+    lines.append("  enable: true")
+    lines.append("  ipv6: false")
+    lines.append("  enhanced-mode: fake-ip")
+    lines.append("  fake-ip-range: 198.18.0.1/16")
+    lines.append("  nameserver:")
+    lines.append("    - 119.29.29.29")
+    lines.append("    - 223.5.5.5")
+    lines.append("  fallback:")
+    lines.append("    - 8.8.8.8")
+    lines.append("    - 1.1.1.1\n")
+
+    lines.append("proxies:")
+    node_names = []
+    for idx, n in enumerate(nodes):
+        name = f"{n.get('remark', 'relay')}-{n.get('port')}"
+        # 避免重名
+        if name in node_names:
+            name = f"{name}-{idx+1}"
+        node_names.append(name)
+        lines.append(f'  - name: "{name}"')
+        lines.append("    type: vless")
+        lines.append(f"    server: {server_ip}")
+        lines.append(f"    port: {n.get('port')}")
+        lines.append(f'    uuid: "{n.get("uuid")}"')
+        lines.append("    network: tcp")
+        lines.append("    udp: true")
+        lines.append("    tls: true")
+        lines.append('    flow: ""')
+        lines.append(f'    servername: "{n.get("sni", "apple.com")}"')
+        lines.append("    reality-opts:")
+        lines.append(f'      public-key: "{n.get("public_key")}"')
+        lines.append(f'      short-id: "{n.get("short_id", "")}"')
+        lines.append("    client-fingerprint: chrome\n")
+
+    if not node_names:
+        node_names = ["DIRECT"]
+
+    lines.append("proxy-groups:")
+    lines.append('  - name: "节点选择"')
+    lines.append("    type: select")
+    lines.append("    proxies:")
+    lines.append('      - "自动选择"')
+    for name in node_names:
+        lines.append(f'      - "{name}"')
+    lines.append('      - "DIRECT"\n')
+
+    lines.append('  - name: "自动选择"')
+    lines.append("    type: url-test")
+    lines.append('    url: "http://www.gstatic.com/generate_204"')
+    lines.append("    interval: 300")
+    lines.append("    tolerance: 50")
+    lines.append("    proxies:")
+    for name in node_names:
+        lines.append(f'      - "{name}"')
+    lines.append("\nrules:")
+    lines.append("  - GEOIP,CN,DIRECT")
+    lines.append("  - GEOSITE,CN,DIRECT")
+    lines.append("  - MATCH,节点选择")
+
+    return "\n".join(lines)
+
 # ==================== x-ui 数据库管理 ====================
 class XuiManager:
     def __init__(self, db_path=None):
         self.db_path = db_path or CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH)
+        self.init_db()
 
     def get_connection(self):
         return sqlite3.connect(self.db_path)
+
+    def init_db(self):
+        """确保 relay_groups 分组表存在"""
+        try:
+            conn = self.get_connection()
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS relay_groups (
+                    inbound_id INTEGER PRIMARY KEY,
+                    group_name TEXT NOT NULL
+                );
+            """)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[Warn] init_db failed: {e}")
 
     def restart_xui(self):
         try:
@@ -531,7 +617,32 @@ class XuiManager:
                     used.add(p)
         raise Exception("无法在 20000-60000 范围找到空闲端口")
 
-    def list_relay_nodes(self):
+    def get_all_groups(self):
+        """获取所有现存分组名称"""
+        groups = set()
+        try:
+            conn = self.get_connection()
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT group_name FROM relay_groups WHERE group_name IS NOT NULL AND group_name != '';")
+            for r in c.fetchall():
+                groups.add(r[0])
+            conn.close()
+        except Exception:
+            pass
+        groups.add(DEFAULT_GROUP)
+        return sorted(list(groups))
+
+    def set_node_group(self, inbound_id, group_name):
+        """修改指定节点的分组"""
+        group_name = (group_name or DEFAULT_GROUP).strip()
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT INTO relay_groups (inbound_id, group_name) VALUES (?, ?) ON CONFLICT(inbound_id) DO UPDATE SET group_name=?;", (inbound_id, group_name, group_name))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_relay_nodes(self, target_group=None):
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -549,7 +660,13 @@ class XuiManager:
                     if out_tag in outbounds:
                         inbound_to_outbound[tag] = outbounds[out_tag]
 
-        c.execute("SELECT * FROM inbounds ORDER BY id DESC;")
+        # 联合查询 group_name
+        c.execute("""
+            SELECT inbounds.*, relay_groups.group_name
+            FROM inbounds
+            LEFT JOIN relay_groups ON inbounds.id = relay_groups.inbound_id
+            ORDER BY inbounds.id DESC;
+        """)
         inbound_rows = c.fetchall()
         conn.close()
 
@@ -577,6 +694,11 @@ class XuiManager:
 
             remark = row["remark"] or f"relay-{row['port']}"
             port = row["port"]
+            group_name = row["group_name"] or DEFAULT_GROUP
+
+            # 如果指定了目标分组筛选
+            if target_group and target_group != "全部" and target_group != "全部分组" and group_name != target_group:
+                continue
 
             vless_link = f"vless://{client_id}@{server_ip}:{port}?security=reality&encryption=none&pbk={pub_key}&headerType=none&fp=chrome&type=tcp&sni={sni}&sid={sid}#{urllib.parse.quote(remark)}"
 
@@ -588,7 +710,6 @@ class XuiManager:
                 target_port = 0
                 user_str = ""
 
-                # 提取目标地址
                 if proto in ("socks", "http", "shadowsocks", "trojan"):
                     srvs = out_info.get("settings", {}).get("servers", [{}])
                     if srvs:
@@ -622,6 +743,7 @@ class XuiManager:
                 "port": port,
                 "protocol": row["protocol"],
                 "remark": remark,
+                "group": group_name,
                 "enable": bool(row["enable"]),
                 "up": row["up"],
                 "down": row["down"],
@@ -637,12 +759,12 @@ class XuiManager:
 
         return nodes
 
-    def add_relay_node(self, node_info, remark=None, custom_port=None, sni=None):
-        """核心方法：一键添加中转节点 (支持全协议)"""
+    def add_relay_node(self, node_info, remark=None, custom_port=None, sni=None, group_name=DEFAULT_GROUP):
         outbound_tag = node_info["outbound_tag"]
         new_outbound = node_info["outbound"]
         host = node_info.get("host", "")
         remark = remark or node_info.get("remark") or host
+        group_name = (group_name or DEFAULT_GROUP).strip()
 
         conn = self.get_connection()
         c = conn.cursor()
@@ -660,12 +782,10 @@ class XuiManager:
             outbounds = template.get("outbounds", [])
             rules = template.get("routing", {}).get("rules", [])
 
-            # 替换或添加 outbound
             outbounds = [o for o in outbounds if o.get("tag") != outbound_tag]
             outbounds.append(new_outbound)
             template["outbounds"] = outbounds
 
-            # 插入精准路由规则
             new_rule = {
                 "type": "field",
                 "inboundTag": [inbound_tag],
@@ -724,6 +844,10 @@ class XuiManager:
                 json.dumps(in_sniffing, indent=2)
             ))
 
+            new_inbound_id = c.lastrowid
+            # 记录分组
+            c.execute("INSERT OR REPLACE INTO relay_groups (inbound_id, group_name) VALUES (?, ?);", (new_inbound_id, group_name))
+
             conn.commit()
             conn.close()
 
@@ -734,8 +858,10 @@ class XuiManager:
 
             return {
                 "success": True,
+                "id": new_inbound_id,
                 "port": port,
                 "remark": remark,
+                "group": group_name,
                 "uuid": client_id,
                 "public_key": pub_key,
                 "short_id": sid,
@@ -787,6 +913,7 @@ class XuiManager:
             self.save_template_config(c, template)
 
             c.execute("DELETE FROM inbounds WHERE id=?;", (inbound_id,))
+            c.execute("DELETE FROM relay_groups WHERE inbound_id=?;", (inbound_id,))
             conn.commit()
             conn.close()
 
@@ -831,9 +958,10 @@ class RelayWebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
 
+        # 二维码
         if path == "/api/qrcode":
-            query = urllib.parse.parse_qs(parsed.query)
             txt = query.get("text", [""])[0]
             if not txt:
                 self.send_response(400)
@@ -854,33 +982,87 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        # Clash Meta 订阅 / 下载接口 (支持 token 或 session 免密订阅)
+        if path in ("/api/clash/config.yaml", "/clash"):
+            req_token = query.get("token", [""])[0]
+            valid_token = CURRENT_CONFIG.get("sub_token")
+            if not self.is_authenticated() and (not req_token or req_token != valid_token):
+                return self.send_json({"error": "Unauthorized subscription token"}, 401)
+
+            target_group = query.get("group", [""])[0] or None
+            mgr = XuiManager()
+            nodes = mgr.list_relay_nodes(target_group=target_group)
+            yaml_content = generate_clash_meta_yaml(nodes, group_name=target_group or "全部分组", server_ip=CURRENT_CONFIG.get("server_ip", SERVER_IP))
+            yaml_bytes = yaml_content.encode("utf-8")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-yaml; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="clash_meta_{(target_group or "all")}.yaml"')
+            self.send_header("Content-Length", str(len(yaml_bytes)))
+            self.end_headers()
+            self.wfile.write(yaml_bytes)
+            return
+
         if path == "/api/status":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized", "auth": False}, 401)
+            mgr = XuiManager()
             return self.send_json({
                 "auth": True,
                 "server_ip": CURRENT_CONFIG.get("server_ip", SERVER_IP),
                 "port": CURRENT_CONFIG.get("port", DEFAULT_PORT),
                 "db_path": CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH),
-                "default_sni": CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
+                "default_sni": CURRENT_CONFIG.get("default_sni", DEFAULT_SNI),
+                "sub_token": CURRENT_CONFIG.get("sub_token"),
+                "groups": mgr.get_all_groups()
             })
 
         if path == "/api/nodes":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
+            target_group = query.get("group", [""])[0] or None
             try:
                 mgr = XuiManager()
-                nodes = mgr.list_relay_nodes()
-                return self.send_json({"success": True, "nodes": nodes})
+                nodes = mgr.list_relay_nodes(target_group=target_group)
+                groups = mgr.get_all_groups()
+                return self.send_json({"success": True, "nodes": nodes, "groups": groups})
+            except Exception as e:
+                return self.send_json({"success": False, "error": str(e)}, 500)
+
+        if path == "/api/groups":
+            if not self.is_authenticated():
+                return self.send_json({"error": "Unauthorized"}, 401)
+            mgr = XuiManager()
+            return self.send_json({"success": True, "groups": mgr.get_all_groups()})
+
+        if path == "/api/clash/export":
+            if not self.is_authenticated():
+                return self.send_json({"error": "Unauthorized"}, 401)
+            target_group = query.get("group", [""])[0] or None
+            try:
+                mgr = XuiManager()
+                nodes = mgr.list_relay_nodes(target_group=target_group)
+                yaml_content = generate_clash_meta_yaml(nodes, group_name=target_group or "全部分组", server_ip=CURRENT_CONFIG.get("server_ip", SERVER_IP))
+                sub_url = f"http://{CURRENT_CONFIG.get('server_ip', SERVER_IP)}:{CURRENT_CONFIG.get('port', DEFAULT_PORT)}/api/clash/config.yaml?token={CURRENT_CONFIG.get('sub_token')}"
+                if target_group:
+                    sub_url += f"&group={urllib.parse.quote(target_group)}"
+                return self.send_json({
+                    "success": True,
+                    "yaml": yaml_content,
+                    "group": target_group or "全部分组",
+                    "count": len(nodes),
+                    "sub_url": sub_url
+                })
             except Exception as e:
                 return self.send_json({"success": False, "error": str(e)}, 500)
 
         if path == "/api/export":
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
+            target_group = query.get("group", [""])[0] or None
             try:
                 mgr = XuiManager()
-                nodes = mgr.list_relay_nodes()
+                nodes = mgr.list_relay_nodes(target_group=target_group)
                 links = [n["vless_link"] for n in nodes if n.get("vless_link")]
                 return self.send_json({"success": True, "links": links, "raw": "\n".join(links)})
             except Exception as e:
@@ -932,6 +1114,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         if path == "/api/nodes/add":
             raw_input = (params.get("socks5_str") or params.get("node_str") or "").strip()
             remark = (params.get("remark") or "").strip() or None
+            group_name = (params.get("group") or DEFAULT_GROUP).strip()
             custom_port = params.get("port")
             if custom_port:
                 try: custom_port = int(custom_port)
@@ -944,13 +1127,14 @@ class RelayWebHandler(BaseHTTPRequestHandler):
 
             try:
                 mgr = XuiManager()
-                res = mgr.add_relay_node(parsed_node, remark=remark, custom_port=custom_port, sni=sni)
+                res = mgr.add_relay_node(parsed_node, remark=remark, custom_port=custom_port, sni=sni, group_name=group_name)
                 return self.send_json({"success": True, "node": res})
             except Exception as e:
                 return self.send_json({"success": False, "error": str(e)}, 500)
 
         if path == "/api/nodes/batch-add":
             batch_text = (params.get("batch_text") or "").strip()
+            group_name = (params.get("group") or DEFAULT_GROUP).strip()
             sni = (params.get("sni") or "").strip() or None
             lines = [l.strip() for l in batch_text.splitlines() if l.strip()]
             if not lines:
@@ -966,7 +1150,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                     errors.append(f"解析失败: {line[:30]}...")
                     continue
                 try:
-                    res = mgr.add_relay_node(parsed_node, sni=sni)
+                    res = mgr.add_relay_node(parsed_node, sni=sni, group_name=group_name)
                     success_nodes.append(res)
                 except Exception as e:
                     errors.append(f"添加失败: {e}")
@@ -978,6 +1162,15 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 "nodes": success_nodes,
                 "errors": errors
             })
+
+        if path == "/api/nodes/set-group":
+            node_id = params.get("id")
+            group_name = (params.get("group") or DEFAULT_GROUP).strip()
+            if not node_id:
+                return self.send_json({"success": False, "error": "缺少节点ID"}, 400)
+            mgr = XuiManager()
+            mgr.set_node_group(int(node_id), group_name)
+            return self.send_json({"success": True, "msg": "分组已更新"})
 
         if path == "/api/nodes/delete":
             node_id = params.get("id")
@@ -1015,9 +1208,11 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             new_u = (params.get("username") or "").strip()
             new_p = (params.get("password") or "").strip()
             new_sni = (params.get("default_sni") or "").strip()
+            reset_token = params.get("reset_token")
             if new_u: CURRENT_CONFIG["username"] = new_u
             if new_p: CURRENT_CONFIG["password"] = new_p
             if new_sni: CURRENT_CONFIG["default_sni"] = new_sni
+            if reset_token: CURRENT_CONFIG["sub_token"] = secrets.token_hex(16)
             save_config(CURRENT_CONFIG)
             return self.send_json({"success": True, "msg": "配置已更新"})
 

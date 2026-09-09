@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>x-ui 全协议落地中转管理面板</title>
+  <title>x-ui 全协议中转管理面板</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -182,6 +182,14 @@
     .btn-primary:hover {
       background: linear-gradient(135deg, #4338ca, #4f46e5);
     }
+    .btn-clash {
+      background: linear-gradient(135deg, #0284c7, #0ea5e9);
+      color: white;
+      box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+    }
+    .btn-clash:hover {
+      background: linear-gradient(135deg, #0369a1, #0284c7);
+    }
     .btn-secondary {
       background: #1e293b;
       color: #e2e8f0;
@@ -273,7 +281,7 @@
       background: #131b2e;
       border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 14px;
-      max-width: 440px;
+      max-width: 500px;
       width: 100%;
       padding: 1.5rem;
       position: relative;
@@ -289,6 +297,7 @@
     .tab-group {
       display: flex;
       gap: 0.5rem;
+      flex-wrap: wrap;
     }
     .tab-item {
       padding: 0.35rem 0.75rem;
@@ -299,11 +308,16 @@
       color: #94a3b8;
       border: 1px solid #334155;
       cursor: pointer;
+      transition: all 0.2s;
     }
     .tab-item.active {
       background: #4f46e5;
       color: white;
       border-color: #4f46e5;
+    }
+    .tab-item:hover:not(.active) {
+      background: #334155;
+      color: #f8fafc;
     }
 
     .proto-badge {
@@ -322,6 +336,23 @@
     .proto-trojan { background: rgba(234, 179, 8, 0.2); color: #fde047; border: 1px solid rgba(234, 179, 8, 0.4); }
     .proto-shadowsocks { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.4); }
     .proto-http { background: rgba(14, 165, 233, 0.2); color: #7dd3fc; border: 1px solid rgba(14, 165, 233, 0.4); }
+
+    .group-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      background: rgba(99, 102, 241, 0.15);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      cursor: pointer;
+    }
+    .group-badge:hover {
+      background: rgba(99, 102, 241, 0.3);
+    }
 
     #toast-bar {
       position: fixed;
@@ -347,8 +378,8 @@
       <div class="brand">
         <div class="brand-logo">🔀</div>
         <div>
-          <div class="brand-title">x-ui 全协议落地中转管理面板</div>
-          <div class="brand-sub">VMess / Socks5 / VLESS / Trojan / SS / HTTP ➔ VLESS Reality 中转</div>
+          <div class="brand-title">x-ui 全协议中转管理面板</div>
+          <div class="brand-sub">VMess / Socks5 / Trojan / VLESS / SS / HTTP ➔ VLESS Reality 中转</div>
         </div>
       </div>
       <div id="nav-actions" style="display:none; align-items:center; gap: 0.75rem;">
@@ -391,7 +422,7 @@
       <div class="stat-card">
         <div class="stat-icon">🌐</div>
         <div>
-          <div class="stat-label">已挂载中转节点</div>
+          <div class="stat-label">已挂载节点数</div>
           <div class="stat-val" id="stat-count">0</div>
         </div>
       </div>
@@ -410,10 +441,10 @@
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon" style="color:#c084fc;">🛡️</div>
+        <div class="stat-icon" style="color:#c084fc;">🏷️</div>
         <div>
-          <div class="stat-label">前端统一中转协议</div>
-          <div class="stat-val" style="font-size: 1rem; color:#c084fc;">VLESS Reality</div>
+          <div class="stat-label">现有分组数量</div>
+          <div class="stat-val" id="stat-groups-count" style="color:#c084fc;">0</div>
         </div>
       </div>
     </div>
@@ -426,7 +457,7 @@
         </div>
         <div class="tab-group">
           <button id="tab-btn-single" class="tab-item active" onclick="switchTab('single')">单节点导入</button>
-          <button id="tab-btn-batch" class="tab-item" onclick="switchTab('batch')">批量导入</button>
+          <button id="tab-btn-batch" class="tab-item" onclick="switchTab('batch')">批量多行导入</button>
         </div>
       </div>
       <div class="card-body">
@@ -450,13 +481,17 @@
             <div id="test-info-box" style="display:none; margin-top: 0.5rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.8rem;"></div>
           </div>
 
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <div>
+              <label class="form-label">所属节点分组</label>
+              <input id="input-group-single" type="text" list="group-datalist" class="input-text" value="默认分组" placeholder="输入或选择分组">
+            </div>
             <div>
               <label class="form-label">自定义中转端口 (留空自动分配)</label>
               <input id="input-port-single" type="number" class="input-text" placeholder="如 42050">
             </div>
             <div>
-              <label class="form-label">节点备注 (留空默认为原节点备注或IP)</label>
+              <label class="form-label">节点备注 (留空自动命名)</label>
               <input id="input-remark-single" type="text" class="input-text" placeholder="如 美国落地-01">
             </div>
             <div>
@@ -478,15 +513,24 @@
                       placeholder="vmess://ew0KICAidiI6ICIyI...&#10;trojan://password@ip:port...&#10;82.110.39.8:7610:user:pass"></textarea>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-            <div style="display: flex; align-items: center; gap: 0.5rem;">
-              <span style="font-size: 0.8rem; color: #94a3b8;">统一伪装域名:</span>
-              <input id="input-batch-sni" type="text" class="input-text" value="apple.com" style="width: 140px; padding: 0.4rem 0.6rem;">
+            <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <span style="font-size: 0.8rem; color: #94a3b8;">统一分组:</span>
+                <input id="input-batch-group" type="text" list="group-datalist" class="input-text" value="默认分组" style="width: 130px; padding: 0.4rem 0.6rem;">
+              </div>
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <span style="font-size: 0.8rem; color: #94a3b8;">统一SNI:</span>
+                <input id="input-batch-sni" type="text" class="input-text" value="apple.com" style="width: 120px; padding: 0.4rem 0.6rem;">
+              </div>
             </div>
             <button onclick="submitAddBatch()" id="btn-add-batch" class="btn btn-primary">
               🚀 批量一键生成并生效
             </button>
           </div>
         </div>
+
+        <!-- 共享分组下拉提示 -->
+        <datalist id="group-datalist"></datalist>
 
       </div>
     </div>
@@ -498,16 +542,24 @@
           <span>📋 中转节点列表</span>
           <span id="badge-total" style="font-size: 0.75rem; background: rgba(99, 102, 241, 0.2); color: #c7d2fe; padding: 0.2rem 0.5rem; border-radius: 4px; font-family: monospace;">0</span>
         </div>
-        <div style="display: flex; gap: 0.5rem;">
-          <button onclick="openExport()" class="btn btn-secondary btn-sm">📋 批量导出</button>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <button onclick="openClashExportModal()" class="btn btn-clash btn-sm">⚡ 导出 Clash Meta</button>
+          <button onclick="openExport()" class="btn btn-secondary btn-sm">📋 导出链接</button>
           <button onclick="fetchNodesList()" class="btn btn-secondary btn-sm">🔄 刷新</button>
         </div>
       </div>
+
+      <!-- 分组筛选标签栏 -->
+      <div style="padding: 0.75rem 1.25rem 0.25rem; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+        <span style="font-size: 0.75rem; color: #94a3b8; margin-right: 0.25rem;">分组过滤:</span>
+        <div id="group-filter-tabs" class="tab-group"></div>
+      </div>
+
       <div class="table-box">
         <table>
           <thead>
             <tr>
-              <th>备注</th>
+              <th>备注 / 分组</th>
               <th>中转端口</th>
               <th>落地节点信息</th>
               <th>流量统计 (上/下)</th>
@@ -524,6 +576,54 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- Clash Meta 导出弹窗 -->
+  <div id="modal-clash" class="modal-mask">
+    <div class="modal-body" style="max-width: 620px;">
+      <button onclick="closeModal('modal-clash')" class="modal-close">✕</button>
+      <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+        <span style="font-size: 1.2rem;">⚡</span>
+        <h3 style="font-size: 1.1rem; font-weight: 700;">导出 Clash Meta (Mihomo) 配置</h3>
+      </div>
+      <p style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.75rem;">
+        生成的配置包含所有 VLESS + Reality 代理节点及国内外自动分流分流规则组。
+      </p>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+        <div style="display: flex; align-items: center; gap: 0.4rem;">
+          <span style="font-size: 0.8rem; color: #cbd5e1;">选择导出分组:</span>
+          <select id="clash-group-select" onchange="updateClashPreview()" class="input-text" style="width: auto; padding: 0.35rem 0.6rem; font-size: 0.8rem;"></select>
+        </div>
+        <span id="clash-nodes-count" style="font-size: 0.75rem; color: #38bdf8; font-family: monospace;"></span>
+      </div>
+
+      <textarea id="clash-yaml-preview" class="input-area" rows="10" readonly style="font-size: 0.75rem; margin-bottom: 1rem;"></textarea>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.5rem; margin-bottom: 0.75rem;">
+        <button onclick="copyClashYaml()" class="btn btn-primary btn-sm">📋 复制 YAML 配置</button>
+        <button onclick="downloadClashYaml()" class="btn btn-clash btn-sm">💾 下载 .yaml 文件</button>
+        <button onclick="copyClashSubUrl()" class="btn btn-secondary btn-sm" style="color: #38bdf8;">🔗 复制订阅链接</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 修改分组弹窗 -->
+  <div id="modal-set-group" class="modal-mask">
+    <div class="modal-body" style="max-width: 360px;">
+      <button onclick="closeModal('modal-set-group')" class="modal-close">✕</button>
+      <h3 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.75rem;">修改节点分组</h3>
+      <input type="hidden" id="edit-node-id">
+      <div class="form-item">
+        <label class="form-label">节点名称</label>
+        <input type="text" id="edit-node-name" class="input-text" readonly style="color:#94a3b8;">
+      </div>
+      <div class="form-item">
+        <label class="form-label">目标分组 (可选择或输入新分组)</label>
+        <input type="text" id="edit-node-group" list="group-datalist" class="input-text" placeholder="输入分组名称">
+      </div>
+      <button onclick="submitSetGroup()" class="btn btn-primary" style="width: 100%;">保存分组</button>
+    </div>
   </div>
 
   <!-- 二维码弹窗 -->
@@ -543,7 +643,7 @@
     </div>
   </div>
 
-  <!-- 批量导出弹窗 -->
+  <!-- 批量导出链接弹窗 -->
   <div id="modal-export" class="modal-mask">
     <div class="modal-body" style="max-width: 580px;">
       <button onclick="closeModal('modal-export')" class="modal-close">✕</button>
@@ -559,7 +659,12 @@
 
   <script>
     let currentNodes = [];
+    let allGroups = ['默认分组'];
+    let selectedFilterGroup = '全部';
     let serverIp = '212.135.38.177';
+    let subToken = '';
+    let currentClashYaml = '';
+    let currentClashSubUrl = '';
 
     function showToast(text) {
       const el = document.getElementById('toast-bar');
@@ -600,10 +705,13 @@
         if (res.ok) {
           const data = await res.json();
           serverIp = data.server_ip;
+          subToken = data.sub_token;
+          allGroups = data.groups || ['默认分组'];
           document.getElementById('server-ip-badge').innerText = serverIp;
           document.getElementById('view-login').style.display = 'none';
           document.getElementById('view-dashboard').style.display = 'block';
           document.getElementById('nav-actions').style.display = 'flex';
+          updateGroupDatalist();
           fetchNodesList();
         } else {
           document.getElementById('view-login').style.display = 'block';
@@ -654,18 +762,47 @@
       location.reload();
     }
 
+    function updateGroupDatalist() {
+      const dl = document.getElementById('group-datalist');
+      dl.innerHTML = allGroups.map(g => `<option value="${g}"></option>`).join('');
+      document.getElementById('stat-groups-count').innerText = allGroups.length;
+    }
+
     async function fetchNodesList() {
       const tbody = document.getElementById('table-node-rows');
       try {
-        const res = await fetch('/api/nodes');
+        let url = '/api/nodes';
+        if (selectedFilterGroup && selectedFilterGroup !== '全部') {
+          url += '?group=' + encodeURIComponent(selectedFilterGroup);
+        }
+        const res = await fetch(url);
         const data = await res.json();
         if (data.success) {
           currentNodes = data.nodes || [];
+          if (data.groups) {
+            allGroups = data.groups;
+            updateGroupDatalist();
+          }
+          renderFilterTabs();
           renderNodesTable();
         }
       } catch (e) {
         tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#fb7185; padding:2rem;">获取节点失败: ${e.message}</td></tr>`;
       }
+    }
+
+    function renderFilterTabs() {
+      const container = document.getElementById('group-filter-tabs');
+      const tabs = ['全部', ...allGroups];
+      container.innerHTML = tabs.map(g => {
+        const active = (selectedFilterGroup === g) ? 'active' : '';
+        return `<button class="tab-item ${active}" onclick="selectFilterGroup('${g}')">${g}</button>`;
+      }).join('');
+    }
+
+    function selectFilterGroup(g) {
+      selectedFilterGroup = g;
+      fetchNodesList();
     }
 
     function renderNodesTable() {
@@ -677,7 +814,7 @@
       let totalDown = 0;
 
       if (currentNodes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#64748b; padding:2rem;">暂无节点，请在上方添加</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#64748b; padding:2rem;">当前分组暂无节点</td></tr>`;
       } else {
         let html = '';
         currentNodes.forEach((n, idx) => {
@@ -706,12 +843,21 @@
             }
           }
 
+          const groupName = n.group || '默认分组';
+
           html += `
             <tr>
               <td>
-                <div style="display:flex; align-items:center; gap:0.4rem; font-weight:600;">
-                  <span style="width:8px; height:8px; border-radius:50%; background:${n.is_relay ? '#818cf8' : '#64748b'};"></span>
-                  <span>${n.remark}</span>
+                <div style="display:flex; flex-direction:column; gap:0.25rem;">
+                  <div style="display:flex; align-items:center; gap:0.4rem; font-weight:600;">
+                    <span style="width:8px; height:8px; border-radius:50%; background:${n.is_relay ? '#818cf8' : '#64748b'};"></span>
+                    <span>${n.remark}</span>
+                  </div>
+                  <div>
+                    <span class="group-badge" onclick="openSetGroupModal(${n.id}, '${n.remark}', '${groupName}')" title="点击修改分组">
+                      🏷️ ${groupName} ✎
+                    </span>
+                  </div>
                 </div>
               </td>
               <td><span style="font-family:monospace; font-weight:700; color:#a5b4fc; font-size:0.9rem;">${n.port}</span></td>
@@ -763,7 +909,7 @@
           box.style.background = 'rgba(16, 185, 129, 0.15)';
           box.style.border = '1px solid rgba(16, 185, 129, 0.3)';
           box.style.color = '#6ee7b7';
-          box.innerText = `✅ 连通正常 | 延迟: ${data.result.latency}ms | 落地目标: ${data.result.exit_ip}`;
+          box.innerText = `✅ 连通正常 | 延迟: ${data.result.latency}ms | 目标: ${data.result.exit_ip}`;
         } else {
           box.style.background = 'rgba(244, 63, 94, 0.15)';
           box.style.border = '1px solid rgba(244, 63, 94, 0.3)';
@@ -783,6 +929,7 @@
 
     async function submitAddSingle() {
       const raw = document.getElementById('input-socks-single').value.trim();
+      const groupName = document.getElementById('input-group-single').value.trim();
       const portVal = document.getElementById('input-port-single').value.trim();
       const remark = document.getElementById('input-remark-single').value.trim();
       const sni = document.getElementById('input-sni-single').value.trim();
@@ -793,7 +940,7 @@
         return;
       }
 
-      btn.innerText = '正在编译并重启 x-ui...';
+      btn.innerText = '正在生成并重启 x-ui...';
       btn.disabled = true;
 
       try {
@@ -802,6 +949,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             node_str: raw,
+            group: groupName || '默认分组',
             remark: remark || null,
             port: portVal ? parseInt(portVal) : null,
             sni: sni || 'apple.com'
@@ -830,6 +978,7 @@
 
     async function submitAddBatch() {
       const text = document.getElementById('input-batch-text').value.trim();
+      const groupName = document.getElementById('input-batch-group').value.trim();
       const sni = document.getElementById('input-batch-sni').value.trim();
       const btn = document.getElementById('btn-add-batch');
 
@@ -845,7 +994,11 @@
         const res = await fetch('/api/nodes/batch-add', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ batch_text: text, sni: sni || 'apple.com' })
+          body: JSON.stringify({
+            batch_text: text,
+            group: groupName || '默认分组',
+            sni: sni || 'apple.com'
+          })
         });
         const data = await res.json();
         if (data.success) {
@@ -860,6 +1013,33 @@
       } finally {
         btn.innerText = '🚀 批量一键生成并生效';
         btn.disabled = false;
+      }
+    }
+
+    function openSetGroupModal(nodeId, nodeName, currentGroup) {
+      document.getElementById('edit-node-id').value = nodeId;
+      document.getElementById('edit-node-name').value = nodeName;
+      document.getElementById('edit-node-group').value = currentGroup;
+      document.getElementById('modal-set-group').classList.add('open');
+    }
+
+    async function submitSetGroup() {
+      const nodeId = document.getElementById('edit-node-id').value;
+      const groupName = document.getElementById('edit-node-group').value.trim() || '默认分组';
+      try {
+        const res = await fetch('/api/nodes/set-group', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: nodeId, group: groupName })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('分组修改成功');
+          closeModal('modal-set-group');
+          fetchNodesList();
+        }
+      } catch (e) {
+        alert('修改失败: ' + e.message);
       }
     }
 
@@ -909,11 +1089,69 @@
       }
     }
 
+    // Clash Meta 导出功能
+    async function openClashExportModal() {
+      const sel = document.getElementById('clash-group-select');
+      const options = ['全部分组', ...allGroups];
+      sel.innerHTML = options.map(g => `<option value="${g}">${g}</option>`).join('');
+      if (selectedFilterGroup && selectedFilterGroup !== '全部') {
+        sel.value = selectedFilterGroup;
+      } else {
+        sel.value = '全部分组';
+      }
+      document.getElementById('modal-clash').classList.add('open');
+      await updateClashPreview();
+    }
+
+    async function updateClashPreview() {
+      const groupVal = document.getElementById('clash-group-select').value;
+      const targetGroup = (groupVal === '全部分组') ? '' : groupVal;
+      try {
+        let url = '/api/clash/export';
+        if (targetGroup) url += '?group=' + encodeURIComponent(targetGroup);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.success) {
+          currentClashYaml = data.yaml;
+          currentClashSubUrl = data.sub_url;
+          document.getElementById('clash-yaml-preview').value = data.yaml;
+          document.getElementById('clash-nodes-count').innerText = `已包含 ${data.count} 个节点`;
+        }
+      } catch (e) {
+        showToast('生成配置失败: ' + e.message);
+      }
+    }
+
+    function copyClashYaml() {
+      if (!currentClashYaml) return;
+      copyVlessText(currentClashYaml);
+      showToast('📋 已复制 Clash Meta YAML 配置');
+    }
+
+    function downloadClashYaml() {
+      if (!currentClashYaml) return;
+      const groupVal = document.getElementById('clash-group-select').value;
+      const blob = new Blob([currentClashYaml], { type: 'application/x-yaml;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `clash_meta_${groupVal}.yaml`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast('💾 配置文件已下载');
+    }
+
+    function copyClashSubUrl() {
+      if (!currentClashSubUrl) return;
+      copyVlessText(currentClashSubUrl);
+      showToast('🔗 已复制 Clash 订阅链接 (可直接在客户端导入)');
+    }
+
     function copyVlessText(text) {
       if (!text) return;
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(() => {
-          showToast('📋 已复制 VLESS 链接！');
+          showToast('📋 已复制！');
         }).catch(() => {
           fallbackCopy(text);
         });
@@ -929,7 +1167,7 @@
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-      showToast('📋 已复制 VLESS 链接！');
+      showToast('📋 已复制！');
     }
 
     function openQrModal(idx) {
@@ -944,7 +1182,11 @@
 
     async function openExport() {
       try {
-        const res = await fetch('/api/export');
+        let url = '/api/export';
+        if (selectedFilterGroup && selectedFilterGroup !== '全部') {
+          url += '?group=' + encodeURIComponent(selectedFilterGroup);
+        }
+        const res = await fetch(url);
         const data = await res.json();
         if (data.success) {
           document.getElementById('export-text-content').value = data.raw;
