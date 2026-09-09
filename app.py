@@ -106,6 +106,15 @@ class XrayHelper:
         return secrets.token_hex(4)
 
 # ==================== 通用全协议节点解析器 ====================
+
+def is_valid_hex_uuid(val):
+    if not val or not isinstance(val, str):
+        return False
+    clean = val.replace("-", "").strip()
+    if len(clean) != 32:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in clean)
+
 class NodeParser:
     @staticmethod
     def parse(raw: str):
@@ -123,6 +132,8 @@ class NodeParser:
             host = data.get("add", "").strip()
             port = int(data.get("port", 0))
             uuid_str = data.get("id", "").strip()
+            if not is_valid_hex_uuid(uuid_str):
+                raise Exception(f"VMess 节点 UUID 格式非法: '{uuid_str}' (必须为32位十六进制字符)")
             alter_id = int(data.get("aid", 0))
             security = data.get("scy", "auto") or "auto"
             network = data.get("net", "tcp") or "tcp"
@@ -177,7 +188,9 @@ class NodeParser:
         # 2. VLESS
         if raw.startswith("vless://"):
             u = urllib.parse.urlparse(raw)
-            uuid_str = u.username
+            uuid_str = u.username or ""
+            if not is_valid_hex_uuid(uuid_str):
+                raise Exception(f"VLESS 节点 UUID 格式非法: '{uuid_str}' (必须为32位十六进制字符)")
             host = u.hostname
             port = u.port or 443
             remark = urllib.parse.unquote(u.fragment) or host
@@ -574,6 +587,25 @@ class XuiManager:
             conn.close()
         except Exception as e:
             print(f"[Warn] init_db failed: {e}")
+
+    def ensure_xray_alive(self):
+        """检查 Xray 进程及配置文件自愈"""
+        try:
+            cfg_path = "/usr/local/x-ui/bin/config.json"
+            if os.path.exists(cfg_path) and os.path.exists(XRAY_BIN):
+                res = subprocess.run([XRAY_BIN, "-test", "-config", cfg_path], capture_output=True, text=True, timeout=5)
+                if res.returncode != 0:
+                    print(f"[Self-Healing] Xray config test failed: {res.stdout} {res.stderr}")
+                    conn = self.get_connection()
+                    c = conn.cursor()
+                    tpl = self.get_template_config(c)
+                    tpl = self.verify_template_safety(tpl)
+                    self.save_template_config(c, tpl)
+                    conn.commit()
+                    conn.close()
+                    self.restart_xui()
+        except Exception as e:
+            print(f"[Self-Healing Error] {e}")
 
     def restart_xui(self):
         try:
@@ -1077,6 +1109,8 @@ def traffic_guard_worker():
     while True:
         try:
             mgr.check_traffic_limits()
+            # 检查 xray 核心是否正常运行，若不正常则执行自愈与重启
+            mgr.ensure_xray_alive()
         except Exception as e:
             print(f"[Guard Worker Error] {e}")
         time.sleep(30)
