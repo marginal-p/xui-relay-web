@@ -508,10 +508,26 @@ def generate_clash_meta_yaml(nodes, group_name="全部节点", server_ip=SERVER_
 
     lines.append("proxies:")
     node_names = []
-    for idx, n in enumerate(nodes):
-        name = f"{n.get('remark', 'relay')}-{n.get('port')}"
-        if name in node_names:
-            name = f"{name}-{idx+1}"
+    ip_counter = {}
+    for n in nodes:
+        out = n.get("outbound") or {}
+        exit_ip = (out.get("host") or n.get("remark") or "node").strip()
+        # 剥离任何可能存在的端口（如 1.1.1.1:8080 或 1.1.1.1-8080）
+        if ":" in exit_ip and not exit_ip.startswith("["):
+            exit_ip = exit_ip.split(":")[0].strip()
+        if "-" in exit_ip:
+            parts = exit_ip.rsplit("-", 1)
+            if parts[1].isdigit():
+                exit_ip = parts[0].strip()
+
+        # 如果出现相同落地 IP，为保证 Clash Meta 规范不冲突，追加序号；单节点直接为纯落地 IP
+        if exit_ip not in ip_counter:
+            ip_counter[exit_ip] = 1
+            name = exit_ip
+        else:
+            ip_counter[exit_ip] += 1
+            name = f"{exit_ip} ({ip_counter[exit_ip]})"
+
         node_names.append(name)
         lines.append(f'  - name: "{name}"')
         lines.append("    type: vless")
@@ -879,7 +895,15 @@ class XuiManager:
             if target_group and target_group not in ("全部", "全部分组") and group_name != target_group:
                 continue
 
-            vless_link = f"vless://{client_id}@{server_ip}:{port}?security=reality&encryption=none&pbk={pub_key}&headerType=none&fp=chrome&type=tcp&sni={sni}&sid={sid}#{urllib.parse.quote(remark)}"
+            clean_remark = remark
+            if ":" in clean_remark and not clean_remark.startswith("["):
+                clean_remark = clean_remark.split(":")[0].strip()
+            if "-" in clean_remark:
+                parts = clean_remark.rsplit("-", 1)
+                if parts[1].isdigit():
+                    clean_remark = parts[0].strip()
+
+            vless_link = f"vless://{client_id}@{server_ip}:{port}?security=reality&encryption=none&pbk={pub_key}&headerType=none&fp=chrome&type=tcp&sni={sni}&sid={sid}#{urllib.parse.quote(clean_remark)}"
 
             node_outbound_info = None
             if out_info:
