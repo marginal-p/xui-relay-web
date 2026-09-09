@@ -4,7 +4,7 @@
 x-ui 全协议中转节点 Web 管理服务
 支持将 Socks5 / VMess / VLESS / Trojan / Shadowsocks / HTTP 落地节点
 一键封装为统一的 VLESS + Reality 落地中转节点，并提供现代化网页管理面板。
-支持节点分组管理与一键导出为 Clash Meta (Mihomo) 配置文件及订阅。
+支持节点分组管理、分组流量统计、总流量限制、超限自动暂停保护与 Clash Meta 导出。
 """
 
 import os
@@ -16,6 +16,7 @@ import socket
 import sqlite3
 import secrets
 import base64
+import threading
 import urllib.parse
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -79,7 +80,6 @@ CURRENT_CONFIG["server_ip"] = detect_server_ip()
 class XrayHelper:
     @staticmethod
     def generate_x25519():
-        """调用 Xray 核心生成真实配对的 X25519 密钥对"""
         if os.path.exists(XRAY_BIN):
             try:
                 res = subprocess.run([XRAY_BIN, "x25519"], capture_output=True, text=True, timeout=5)
@@ -497,7 +497,6 @@ def generate_clash_meta_yaml(nodes, group_name="全部节点", server_ip=SERVER_
     node_names = []
     for idx, n in enumerate(nodes):
         name = f"{n.get('remark', 'relay')}-{n.get('port')}"
-        # 避免重名
         if name in node_names:
             name = f"{name}-{idx+1}"
         node_names.append(name)
@@ -553,16 +552,24 @@ class XuiManager:
         return sqlite3.connect(self.db_path)
 
     def init_db(self):
-        """确保 relay_groups 分组表存在"""
+        """确保 relay_groups 与 relay_groups_config 表结构存在"""
         try:
             conn = self.get_connection()
             c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS relay_groups_config (
+                    name TEXT PRIMARY KEY,
+                    traffic_limit INTEGER DEFAULT 0,
+                    is_paused INTEGER DEFAULT 0
+                );
+            """)
             c.execute("""
                 CREATE TABLE IF NOT EXISTS relay_groups (
                     inbound_id INTEGER PRIMARY KEY,
                     group_name TEXT NOT NULL
                 );
             """)
+            c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (DEFAULT_GROUP,))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -617,30 +624,172 @@ class XuiManager:
                     used.add(p)
         raise Exception("无法在 20000-60000 范围找到空闲端口")
 
-    def get_all_groups(self):
-        """获取所有现存分组名称"""
-        groups = set()
+    def get_all_group_names(self):
+        names = set([DEFAULT_GROUP])
         try:
             conn = self.get_connection()
             c = conn.cursor()
+            c.execute("SELECT name FROM relay_groups_config;")
+            for r in c.fetchall():
+                if r[0]: names.add(r[0])
             c.execute("SELECT DISTINCT group_name FROM relay_groups WHERE group_name IS NOT NULL AND group_name != '';")
             for r in c.fetchall():
-                groups.add(r[0])
+                if r[0]: names.add(r[0])
             conn.close()
         except Exception:
             pass
-        groups.add(DEFAULT_GROUP)
-        return sorted(list(groups))
+        return sorted(list(names))
+
+    def get_groups_detail(self):
+        """获取所有分组的详细数据（节点数、流量统计、限额、超限状态）"""
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        c.execute("SELECT name, traffic_limit, is_paused FROM relay_groups_config;")
+        config_rows = {r[0]: {"limit": r[1], "is_paused": r[2]} for r in c.fetchall()}
+
+        c.execute("""
+            SELECT 
+                COALESCE(relay_groups.group_name, ?) as gname,
+                COUNT(inbounds.id) as node_count,
+                COALESCE(SUM(inbounds.up), 0) as total_up,
+                COALESCE(SUM(inbounds.down), 0) as total_down
+            FROM inbounds
+            LEFT JOIN relay_groups ON inbounds.id = relay_groups.inbound_id
+            GROUP BY gname;
+        """, (DEFAULT_GROUP,))
+        stats_rows = c.fetchall()
+        conn.close()
+
+        groups = []
+        seen = set()
+        for r in stats_rows:
+            gname = r[0]
+            seen.add(gname)
+            cfg = config_rows.get(gname, {"limit": 0, "is_paused": 0})
+            total_bytes = r[2] + r[3]
+            limit_bytes = cfg["limit"]
+            is_exceeded = (limit_bytes > 0 and total_bytes >= limit_bytes)
+            groups.append({
+                "name": gname,
+                "node_count": r[1],
+                "up": r[2],
+                "down": r[3],
+                "total": total_bytes,
+                "limit": limit_bytes,
+                "is_paused": bool(cfg["is_paused"]),
+                "is_exceeded": is_exceeded
+            })
+
+        for gname, cfg in config_rows.items():
+            if gname not in seen:
+                groups.append({
+                    "name": gname,
+                    "node_count": 0,
+                    "up": 0,
+                    "down": 0,
+                    "total": 0,
+                    "limit": cfg["limit"],
+                    "is_paused": bool(cfg["is_paused"]),
+                    "is_exceeded": False
+                })
+
+        return sorted(groups, key=lambda x: x["name"])
+
+    def create_or_update_group(self, name, limit_bytes=0):
+        name = (name or DEFAULT_GROUP).strip()
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO relay_groups_config (name, traffic_limit, is_paused)
+            VALUES (?, ?, 0)
+            ON CONFLICT(name) DO UPDATE SET traffic_limit=?;
+        """, (name, limit_bytes, limit_bytes))
+        conn.commit()
+        conn.close()
+        # 立即检查是否需要恢复或暂停
+        self.check_traffic_limits()
+        return True
+
+    def set_group_pause(self, group_name, pause: bool):
+        """暂停或恢复某个分组（开启/关闭该分组所有节点）"""
+        conn = self.get_connection()
+        c = conn.cursor()
+        enable_val = 0 if pause else 1
+        is_paused_val = 1 if pause else 0
+        c.execute("""
+            UPDATE inbounds 
+            SET enable=?
+            WHERE id IN (
+                SELECT inbounds.id FROM inbounds 
+                LEFT JOIN relay_groups ON inbounds.id = relay_groups.inbound_id
+                WHERE COALESCE(relay_groups.group_name, ?) = ?
+            );
+        """, (enable_val, DEFAULT_GROUP, group_name))
+        c.execute("UPDATE relay_groups_config SET is_paused=? WHERE name=?;", (is_paused_val, group_name))
+        conn.commit()
+        conn.close()
+        self.restart_xui()
+        return True
+
+    def reset_group_traffic(self, group_name):
+        """重置某个分组内所有节点的上下行流量统计"""
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("""
+            UPDATE inbounds 
+            SET up=0, down=0
+            WHERE id IN (
+                SELECT inbounds.id FROM inbounds 
+                LEFT JOIN relay_groups ON inbounds.id = relay_groups.inbound_id
+                WHERE COALESCE(relay_groups.group_name, ?) = ?
+            );
+        """, (DEFAULT_GROUP, group_name))
+        conn.commit()
+        conn.close()
+        # 流量重置后自动恢复该分组节点
+        self.set_group_pause(group_name, pause=False)
+        return True
+
+    def delete_group(self, group_name):
+        """删除分组（组内节点转移至默认分组）"""
+        if group_name == DEFAULT_GROUP:
+            return False, "默认分组不可删除"
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("UPDATE relay_groups SET group_name=? WHERE group_name=?;", (DEFAULT_GROUP, group_name))
+        c.execute("DELETE FROM relay_groups_config WHERE name=?;", (group_name,))
+        conn.commit()
+        conn.close()
+        return True, "分组已删除"
 
     def set_node_group(self, inbound_id, group_name):
-        """修改指定节点的分组"""
         group_name = (group_name or DEFAULT_GROUP).strip()
         conn = self.get_connection()
         c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (group_name,))
         c.execute("INSERT INTO relay_groups (inbound_id, group_name) VALUES (?, ?) ON CONFLICT(inbound_id) DO UPDATE SET group_name=?;", (inbound_id, group_name, group_name))
         conn.commit()
         conn.close()
+        self.check_traffic_limits()
         return True
+
+    def check_traffic_limits(self):
+        """核心风控：巡检各分组流量，超出限额则暂停该组全部节点"""
+        groups = self.get_groups_detail()
+        triggered = False
+        for g in groups:
+            limit = g["limit"]
+            total = g["total"]
+            gname = g["name"]
+            is_paused = g["is_paused"]
+
+            if limit > 0 and total >= limit:
+                if not is_paused:
+                    print(f"[Traffic Limiter] 警告: 分组 [{gname}] 累计流量 {total} 超过限制 {limit} 字节，执行暂停所有节点！")
+                    self.set_group_pause(gname, pause=True)
+                    triggered = True
+        return triggered
 
     def list_relay_nodes(self, target_group=None):
         conn = self.get_connection()
@@ -660,7 +809,6 @@ class XuiManager:
                     if out_tag in outbounds:
                         inbound_to_outbound[tag] = outbounds[out_tag]
 
-        # 联合查询 group_name
         c.execute("""
             SELECT inbounds.*, relay_groups.group_name
             FROM inbounds
@@ -696,8 +844,7 @@ class XuiManager:
             port = row["port"]
             group_name = row["group_name"] or DEFAULT_GROUP
 
-            # 如果指定了目标分组筛选
-            if target_group and target_group != "全部" and target_group != "全部分组" and group_name != target_group:
+            if target_group and target_group not in ("全部", "全部分组") and group_name != target_group:
                 continue
 
             vless_link = f"vless://{client_id}@{server_ip}:{port}?security=reality&encryption=none&pbk={pub_key}&headerType=none&fp=chrome&type=tcp&sni={sni}&sid={sid}#{urllib.parse.quote(remark)}"
@@ -845,7 +992,7 @@ class XuiManager:
             ))
 
             new_inbound_id = c.lastrowid
-            # 记录分组
+            c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (group_name,))
             c.execute("INSERT OR REPLACE INTO relay_groups (inbound_id, group_name) VALUES (?, ?);", (new_inbound_id, group_name))
 
             conn.commit()
@@ -924,6 +1071,19 @@ class XuiManager:
             conn.close()
             return False, f"删除失败: {e}"
 
+# 后台流量巡检守护线程
+def traffic_guard_worker():
+    mgr = XuiManager()
+    while True:
+        try:
+            mgr.check_traffic_limits()
+        except Exception as e:
+            print(f"[Guard Worker Error] {e}")
+        time.sleep(30)
+
+guard_thread = threading.Thread(target=traffic_guard_worker, daemon=True)
+guard_thread.start()
+
 # ==================== Web Request Handler ====================
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -960,7 +1120,6 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
-        # 二维码
         if path == "/api/qrcode":
             txt = query.get("text", [""])[0]
             if not txt:
@@ -982,7 +1141,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # Clash Meta 订阅 / 下载接口 (支持 token 或 session 免密订阅)
+        # Clash Meta 订阅 / 下载接口
         if path in ("/api/clash/config.yaml", "/clash"):
             req_token = query.get("token", [""])[0]
             valid_token = CURRENT_CONFIG.get("sub_token")
@@ -1014,7 +1173,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 "db_path": CURRENT_CONFIG.get("db_path", DEFAULT_DB_PATH),
                 "default_sni": CURRENT_CONFIG.get("default_sni", DEFAULT_SNI),
                 "sub_token": CURRENT_CONFIG.get("sub_token"),
-                "groups": mgr.get_all_groups()
+                "groups": mgr.get_all_group_names()
             })
 
         if path == "/api/nodes":
@@ -1024,8 +1183,13 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             try:
                 mgr = XuiManager()
                 nodes = mgr.list_relay_nodes(target_group=target_group)
-                groups = mgr.get_all_groups()
-                return self.send_json({"success": True, "nodes": nodes, "groups": groups})
+                groups_detail = mgr.get_groups_detail()
+                return self.send_json({
+                    "success": True, 
+                    "nodes": nodes, 
+                    "groups": [g["name"] for g in groups_detail],
+                    "groups_detail": groups_detail
+                })
             except Exception as e:
                 return self.send_json({"success": False, "error": str(e)}, 500)
 
@@ -1033,7 +1197,10 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             if not self.is_authenticated():
                 return self.send_json({"error": "Unauthorized"}, 401)
             mgr = XuiManager()
-            return self.send_json({"success": True, "groups": mgr.get_all_groups()})
+            return self.send_json({
+                "success": True, 
+                "groups": mgr.get_groups_detail()
+            })
 
         if path == "/api/clash/export":
             if not self.is_authenticated():
@@ -1178,6 +1345,37 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 return self.send_json({"success": False, "error": "缺少节点ID"}, 400)
             mgr = XuiManager()
             ok, msg = mgr.delete_node(int(node_id))
+            return self.send_json({"success": ok, "msg": msg})
+
+        # 分组管理接口
+        if path == "/api/groups/save":
+            name = (params.get("name") or "").strip()
+            if not name:
+                return self.send_json({"success": False, "error": "分组名称不能为空"}, 400)
+            limit_gb = float(params.get("limit_gb") or 0)
+            limit_bytes = int(limit_gb * 1073741824) if limit_gb > 0 else 0
+            mgr = XuiManager()
+            mgr.create_or_update_group(name, limit_bytes=limit_bytes)
+            return self.send_json({"success": True, "msg": f"分组 [{name}] 已保存"})
+
+        if path == "/api/groups/toggle-pause":
+            name = (params.get("name") or "").strip()
+            pause = bool(params.get("pause"))
+            mgr = XuiManager()
+            mgr.set_group_pause(name, pause=pause)
+            status_text = "已暂停该组所有节点" if pause else "已恢复该组所有节点"
+            return self.send_json({"success": True, "msg": f"分组 [{name}] {status_text}"})
+
+        if path == "/api/groups/reset-traffic":
+            name = (params.get("name") or "").strip()
+            mgr = XuiManager()
+            mgr.reset_group_traffic(name)
+            return self.send_json({"success": True, "msg": f"分组 [{name}] 流量已清零并恢复开启"})
+
+        if path == "/api/groups/delete":
+            name = (params.get("name") or "").strip()
+            mgr = XuiManager()
+            ok, msg = mgr.delete_group(name)
             return self.send_json({"success": ok, "msg": msg})
 
         if path == "/api/nodes/test":

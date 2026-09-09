@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>x-ui 全协议中转管理面板</title>
+  <title>x-ui 全协议中转与分组流量管理面板</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -141,7 +141,7 @@
       color: #cbd5e1;
       margin-bottom: 0.4rem;
     }
-    .input-text, .input-area {
+    .input-text, .input-area, select.input-text {
       width: 100%;
       background: #090e17;
       border: 1px solid #334155;
@@ -152,7 +152,12 @@
       outline: none;
       transition: border-color 0.2s;
     }
-    .input-text:focus, .input-area:focus {
+    select.input-text option {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 0.5rem;
+    }
+    .input-text:focus, .input-area:focus, select.input-text:focus {
       border-color: #6366f1;
     }
     .input-area {
@@ -197,6 +202,14 @@
     }
     .btn-secondary:hover {
       background: #334155;
+    }
+    .btn-warning {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .btn-warning:hover {
+      background: rgba(245, 158, 11, 0.25);
     }
     .btn-danger {
       background: rgba(244, 63, 94, 0.12);
@@ -281,7 +294,7 @@
       background: #131b2e;
       border: 1px solid rgba(255, 255, 255, 0.1);
       border-radius: 14px;
-      max-width: 500px;
+      max-width: 520px;
       width: 100%;
       padding: 1.5rem;
       position: relative;
@@ -354,6 +367,21 @@
       background: rgba(99, 102, 241, 0.3);
     }
 
+    /* 进度条 */
+    .progress-bar {
+      width: 100%;
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 0.35rem;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
     #toast-bar {
       position: fixed;
       bottom: 1.5rem;
@@ -378,7 +406,7 @@
       <div class="brand">
         <div class="brand-logo">🔀</div>
         <div>
-          <div class="brand-title">x-ui 全协议中转管理面板</div>
+          <div class="brand-title">x-ui 全协议中转与分组流量管理面板</div>
           <div class="brand-sub">VMess / Socks5 / Trojan / VLESS / SS / HTTP ➔ VLESS Reality 中转</div>
         </div>
       </div>
@@ -422,7 +450,7 @@
       <div class="stat-card">
         <div class="stat-icon">🌐</div>
         <div>
-          <div class="stat-label">已挂载节点数</div>
+          <div class="stat-label">已挂载中转节点</div>
           <div class="stat-val" id="stat-count">0</div>
         </div>
       </div>
@@ -443,9 +471,42 @@
       <div class="stat-card">
         <div class="stat-icon" style="color:#c084fc;">🏷️</div>
         <div>
-          <div class="stat-label">现有分组数量</div>
+          <div class="stat-label">活跃节点分组</div>
           <div class="stat-val" id="stat-groups-count" style="color:#c084fc;">0</div>
         </div>
+      </div>
+    </div>
+
+    <!-- 分组管理与流量限额专区卡片 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">
+          <span>🏷️ 分组管理与流量限额控制</span>
+          <span style="font-size:0.75rem; color:#94a3b8; font-weight:normal;">(支持设置总流量限制，超出限额自动暂停该组所有节点)</span>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button onclick="promptCreateGroup()" class="btn btn-primary btn-sm">+ 新建分组</button>
+          <button onclick="fetchGroupsDetail()" class="btn btn-secondary btn-sm">🔄 刷新</button>
+        </div>
+      </div>
+      <div class="table-box">
+        <table>
+          <thead>
+            <tr>
+              <th>分组名称</th>
+              <th>节点数</th>
+              <th>已用流量</th>
+              <th>流量限额与使用进度</th>
+              <th>运行状态</th>
+              <th style="text-align: right;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="table-group-rows">
+            <tr>
+              <td colspan="6" style="text-align:center; color:#64748b; padding:1.5rem;">加载分组数据中...</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -482,9 +543,13 @@
           </div>
 
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <!-- 解决分组选择无法展开问题：使用原生 select 下拉框并提供新建按钮 -->
             <div>
-              <label class="form-label">所属节点分组</label>
-              <input id="input-group-single" type="text" list="group-datalist" class="input-text" value="默认分组" placeholder="输入或选择分组">
+              <label class="form-label">所属节点分组 (点击展开选择)</label>
+              <div style="display:flex; gap:0.35rem;">
+                <select id="select-group-single" class="input-text" style="flex:1;"></select>
+                <button type="button" onclick="promptCreateGroup()" class="btn btn-secondary btn-sm" title="快速新建分组">+ 新建</button>
+              </div>
             </div>
             <div>
               <label class="form-label">自定义中转端口 (留空自动分配)</label>
@@ -516,7 +581,8 @@
             <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
               <div style="display: flex; align-items: center; gap: 0.4rem;">
                 <span style="font-size: 0.8rem; color: #94a3b8;">统一分组:</span>
-                <input id="input-batch-group" type="text" list="group-datalist" class="input-text" value="默认分组" style="width: 130px; padding: 0.4rem 0.6rem;">
+                <select id="select-group-batch" class="input-text" style="width: 140px; padding: 0.4rem 0.6rem;"></select>
+                <button type="button" onclick="promptCreateGroup()" class="btn btn-secondary btn-sm">+ 新建</button>
               </div>
               <div style="display: flex; align-items: center; gap: 0.4rem;">
                 <span style="font-size: 0.8rem; color: #94a3b8;">统一SNI:</span>
@@ -528,9 +594,6 @@
             </button>
           </div>
         </div>
-
-        <!-- 共享分组下拉提示 -->
-        <datalist id="group-datalist"></datalist>
 
       </div>
     </div>
@@ -559,7 +622,7 @@
         <table>
           <thead>
             <tr>
-              <th>备注 / 分组</th>
+              <th>备注 / 所属分组</th>
               <th>中转端口</th>
               <th>落地节点信息</th>
               <th>流量统计 (上/下)</th>
@@ -576,6 +639,24 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- 分组限额设置弹窗 -->
+  <div id="modal-group-limit" class="modal-mask">
+    <div class="modal-body" style="max-width: 380px;">
+      <button onclick="closeModal('modal-group-limit')" class="modal-close">✕</button>
+      <h3 style="font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem;">设置分组流量限制</h3>
+      <p style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 1rem;">当分组累计使用流量达到此限额时，将自动暂停该组所有节点的入站中转！</p>
+      <div class="form-item">
+        <label class="form-label">分组名称</label>
+        <input type="text" id="limit-group-name" class="input-text" readonly style="color:#94a3b8;">
+      </div>
+      <div class="form-item">
+        <label class="form-label">总流量限制 (GB，填 0 表示不限制)</label>
+        <input type="number" id="limit-group-gb" step="0.5" min="0" class="input-text" placeholder="如 50 表示 50GB">
+      </div>
+      <button onclick="submitGroupLimit()" class="btn btn-primary" style="width: 100%;">保存流量限制</button>
+    </div>
   </div>
 
   <!-- Clash Meta 导出弹窗 -->
@@ -608,7 +689,7 @@
     </div>
   </div>
 
-  <!-- 修改分组弹窗 -->
+  <!-- 修改节点所属分组弹窗 -->
   <div id="modal-set-group" class="modal-mask">
     <div class="modal-body" style="max-width: 360px;">
       <button onclick="closeModal('modal-set-group')" class="modal-close">✕</button>
@@ -619,10 +700,13 @@
         <input type="text" id="edit-node-name" class="input-text" readonly style="color:#94a3b8;">
       </div>
       <div class="form-item">
-        <label class="form-label">目标分组 (可选择或输入新分组)</label>
-        <input type="text" id="edit-node-group" list="group-datalist" class="input-text" placeholder="输入分组名称">
+        <label class="form-label">目标分组 (选择已有或新建)</label>
+        <div style="display:flex; gap:0.35rem;">
+          <select id="edit-node-group-select" class="input-text" style="flex:1;"></select>
+          <button type="button" onclick="promptCreateGroup()" class="btn btn-secondary btn-sm">+ 新建</button>
+        </div>
       </div>
-      <button onclick="submitSetGroup()" class="btn btn-primary" style="width: 100%;">保存分组</button>
+      <button onclick="submitSetGroup()" class="btn btn-primary" style="width: 100%;">保存修改</button>
     </div>
   </div>
 
@@ -659,10 +743,10 @@
 
   <script>
     let currentNodes = [];
+    let groupsDetail = [];
     let allGroups = ['默认分组'];
     let selectedFilterGroup = '全部';
     let serverIp = '212.135.38.177';
-    let subToken = '';
     let currentClashYaml = '';
     let currentClashSubUrl = '';
 
@@ -705,13 +789,11 @@
         if (res.ok) {
           const data = await res.json();
           serverIp = data.server_ip;
-          subToken = data.sub_token;
-          allGroups = data.groups || ['默认分组'];
           document.getElementById('server-ip-badge').innerText = serverIp;
           document.getElementById('view-login').style.display = 'none';
           document.getElementById('view-dashboard').style.display = 'block';
           document.getElementById('nav-actions').style.display = 'flex';
-          updateGroupDatalist();
+          await fetchGroupsDetail();
           fetchNodesList();
         } else {
           document.getElementById('view-login').style.display = 'block';
@@ -762,10 +844,232 @@
       location.reload();
     }
 
-    function updateGroupDatalist() {
-      const dl = document.getElementById('group-datalist');
-      dl.innerHTML = allGroups.map(g => `<option value="${g}"></option>`).join('');
-      document.getElementById('stat-groups-count').innerText = allGroups.length;
+    // 获取并渲染所有分组详情（包含流量限额、超限状态、节点数）
+    async function fetchGroupsDetail() {
+      try {
+        const res = await fetch('/api/groups');
+        const data = await res.json();
+        if (data.success) {
+          groupsDetail = data.groups || [];
+          allGroups = groupsDetail.map(g => g.name);
+          document.getElementById('stat-groups-count').innerText = groupsDetail.length;
+          renderGroupsTable();
+          updateGroupSelectOptions();
+          renderFilterTabs();
+        }
+      } catch (e) {
+        console.error("fetchGroupsDetail failed", e);
+      }
+    }
+
+    // 更新各表单中的分组下拉选项
+    function updateGroupSelectOptions() {
+      const optionsHtml = allGroups.map(g => `<option value="${g}">${g}</option>`).join('');
+      
+      const selSingle = document.getElementById('select-group-single');
+      const curSingle = selSingle.value;
+      selSingle.innerHTML = optionsHtml;
+      if (curSingle && allGroups.includes(curSingle)) selSingle.value = curSingle;
+
+      const selBatch = document.getElementById('select-group-batch');
+      const curBatch = selBatch.value;
+      selBatch.innerHTML = optionsHtml;
+      if (curBatch && allGroups.includes(curBatch)) selBatch.value = curBatch;
+
+      const selEdit = document.getElementById('edit-node-group-select');
+      if (selEdit) selEdit.innerHTML = optionsHtml;
+    }
+
+    // 弹窗创建新分组
+    async function promptCreateGroup() {
+      const name = prompt("请输入新分组名称 (例如: 美国TK专线、欧洲静态住宅、测试组):");
+      if (!name || !name.trim()) return;
+      const gname = name.trim();
+      try {
+        const res = await fetch('/api/groups/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: gname, limit_gb: 0 })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`✅ 分组 [${gname}] 已创建！`);
+          await fetchGroupsDetail();
+          document.getElementById('select-group-single').value = gname;
+          document.getElementById('select-group-batch').value = gname;
+        } else {
+          alert('创建失败: ' + data.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    // 渲染分组管理与流量限额表格
+    function renderGroupsTable() {
+      const tbody = document.getElementById('table-group-rows');
+      if (groupsDetail.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#64748b; padding:1.5rem;">暂无分组</td></tr>`;
+        return;
+      }
+
+      let html = '';
+      groupsDetail.forEach(g => {
+        let percent = 0;
+        let limitText = '<span style="color:#94a3b8;">不限流量</span>';
+        let barColor = '#34d399';
+
+        if (g.limit > 0) {
+          percent = Math.min(100, Math.round((g.total / g.limit) * 100));
+          const limitGb = (g.limit / 1073741824).toFixed(1);
+          limitText = `<span style="font-weight:600;">${limitGb} GB</span>`;
+          if (percent >= 100) {
+            barColor = '#f43f5e';
+          } else if (percent >= 75) {
+            barColor = '#f59e0b';
+          }
+        }
+
+        let statusBadge = '<span style="color:#34d399; font-weight:600;">🟢 正常启用</span>';
+        if (g.is_exceeded) {
+          statusBadge = '<span style="color:#f43f5e; font-weight:700; background:rgba(244,63,94,0.15); padding:2px 6px; border-radius:4px;">🚫 流量超限 (已暂停所有节点)</span>';
+        } else if (g.is_paused) {
+          statusBadge = '<span style="color:#fbbf24; font-weight:600;">⏸ 手动暂停</span>';
+        }
+
+        html += `
+          <tr>
+            <td>
+              <div style="font-weight:700; color:#f1f5f9; display:flex; align-items:center; gap:0.4rem;">
+                <span>🏷️</span>
+                <span>${g.name}</span>
+              </div>
+            </td>
+            <td><span style="font-family:monospace; font-weight:700; color:#a5b4fc;">${g.node_count}</span> 个节点</td>
+            <td style="font-family:monospace; font-size:0.75rem;">
+              <div>总计: <strong style="color:#38bdf8;">${formatTraffic(g.total)}</strong></div>
+              <div style="color:#64748b;">(↑ ${formatTraffic(g.up)} / ↓ ${formatTraffic(g.down)})</div>
+            </td>
+            <td>
+              <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:2px;">
+                <span>已用: ${formatTraffic(g.total)} / 限额: ${limitText}</span>
+                <span style="font-family:monospace; color:${barColor}; font-weight:600;">${g.limit > 0 ? percent + '%' : ''}</span>
+              </div>
+              ${g.limit > 0 ? `
+                <div class="progress-bar">
+                  <div class="progress-fill" style="width: ${percent}%; background: ${barColor};"></div>
+                </div>
+              ` : ''}
+            </td>
+            <td>${statusBadge}</td>
+            <td style="text-align:right; white-space:nowrap;">
+              <button onclick="openGroupLimitModal('${g.name}', ${g.limit})" class="btn btn-secondary btn-sm" title="设置限额">⚙️ 限额</button>
+              <button onclick="toggleGroupPause('${g.name}', ${g.is_paused})" class="btn ${g.is_paused ? 'btn-primary' : 'btn-warning'} btn-sm">
+                ${g.is_paused ? '▶ 恢复' : '⏸ 暂停'}
+              </button>
+              <button onclick="resetGroupTraffic('${g.name}')" class="btn btn-secondary btn-sm" title="清零流量并恢复">🔄 清零</button>
+              ${g.name !== '默认分组' ? `
+                <button onclick="deleteGroup('${g.name}')" class="btn btn-danger btn-sm" title="删除分组">删除</button>
+              ` : ''}
+            </td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function openGroupLimitModal(gname, currentLimitBytes) {
+      document.getElementById('limit-group-name').value = gname;
+      const gbVal = currentLimitBytes > 0 ? (currentLimitBytes / 1073741824).toFixed(1) : 0;
+      document.getElementById('limit-group-gb').value = gbVal;
+      document.getElementById('modal-group-limit').classList.add('open');
+    }
+
+    async function submitGroupLimit() {
+      const name = document.getElementById('limit-group-name').value;
+      const gbVal = parseFloat(document.getElementById('limit-group-gb').value) || 0;
+      try {
+        const res = await fetch('/api/groups/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, limit_gb: gbVal })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.msg);
+          closeModal('modal-group-limit');
+          await fetchGroupsDetail();
+          fetchNodesList();
+        } else {
+          alert('保存失败: ' + data.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    async function toggleGroupPause(gname, isPaused) {
+      const action = isPaused ? "恢复启用" : "暂停";
+      if (!confirm(`确定要 ${action} 分组 [${gname}] 下的所有节点吗？`)) return;
+      try {
+        const res = await fetch('/api/groups/toggle-pause', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: gname, pause: !isPaused })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.msg);
+          await fetchGroupsDetail();
+          fetchNodesList();
+        } else {
+          alert('操作失败: ' + data.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    async function resetGroupTraffic(gname) {
+      if (!confirm(`确定要将分组 [${gname}] 的已用流量清零吗？\n(清零后若处于超限暂停状态将自动恢复开启)`)) return;
+      try {
+        const res = await fetch('/api/groups/reset-traffic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: gname })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.msg);
+          await fetchGroupsDetail();
+          fetchNodesList();
+        } else {
+          alert('操作失败: ' + data.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    async function deleteGroup(gname) {
+      if (!confirm(`确定要删除分组 [${gname}] 吗？\n该分组内的节点将自动转移到【默认分组】`)) return;
+      try {
+        const res = await fetch('/api/groups/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: gname })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.msg);
+          await fetchGroupsDetail();
+          fetchNodesList();
+        } else {
+          alert('删除失败: ' + data.msg);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
     }
 
     async function fetchNodesList() {
@@ -779,11 +1083,6 @@
         const data = await res.json();
         if (data.success) {
           currentNodes = data.nodes || [];
-          if (data.groups) {
-            allGroups = data.groups;
-            updateGroupDatalist();
-          }
-          renderFilterTabs();
           renderNodesTable();
         }
       } catch (e) {
@@ -802,6 +1101,7 @@
 
     function selectFilterGroup(g) {
       selectedFilterGroup = g;
+      renderFilterTabs();
       fetchNodesList();
     }
 
@@ -814,7 +1114,7 @@
       let totalDown = 0;
 
       if (currentNodes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#64748b; padding:2rem;">当前分组暂无节点</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#64748b; padding:2rem;">当前筛选分组下暂无节点</td></tr>`;
       } else {
         let html = '';
         currentNodes.forEach((n, idx) => {
@@ -844,14 +1144,16 @@
           }
 
           const groupName = n.group || '默认分组';
+          const isEnabled = n.enable;
 
           html += `
-            <tr>
+            <tr style="${!isEnabled ? 'opacity: 0.65; background: rgba(244,63,94,0.04);' : ''}">
               <td>
                 <div style="display:flex; flex-direction:column; gap:0.25rem;">
                   <div style="display:flex; align-items:center; gap:0.4rem; font-weight:600;">
-                    <span style="width:8px; height:8px; border-radius:50%; background:${n.is_relay ? '#818cf8' : '#64748b'};"></span>
+                    <span style="width:8px; height:8px; border-radius:50%; background:${isEnabled ? '#34d399' : '#f43f5e'};"></span>
                     <span>${n.remark}</span>
+                    ${!isEnabled ? '<span style="font-size:0.65rem; background:rgba(244,63,94,0.2); color:#fb7185; padding:1px 4px; border-radius:3px;">已暂停</span>' : ''}
                   </div>
                   <div>
                     <span class="group-badge" onclick="openSetGroupModal(${n.id}, '${n.remark}', '${groupName}')" title="点击修改分组">
@@ -929,7 +1231,7 @@
 
     async function submitAddSingle() {
       const raw = document.getElementById('input-socks-single').value.trim();
-      const groupName = document.getElementById('input-group-single').value.trim();
+      const groupName = document.getElementById('select-group-single').value.trim();
       const portVal = document.getElementById('input-port-single').value.trim();
       const remark = document.getElementById('input-remark-single').value.trim();
       const sni = document.getElementById('input-sni-single').value.trim();
@@ -962,6 +1264,7 @@
           document.getElementById('input-port-single').value = '';
           document.getElementById('input-remark-single').value = '';
           document.getElementById('test-info-box').style.display = 'none';
+          await fetchGroupsDetail();
           await fetchNodesList();
           const idx = currentNodes.findIndex(n => n.port === data.node.port);
           if (idx !== -1) openQrModal(idx);
@@ -978,7 +1281,7 @@
 
     async function submitAddBatch() {
       const text = document.getElementById('input-batch-text').value.trim();
-      const groupName = document.getElementById('input-batch-group').value.trim();
+      const groupName = document.getElementById('select-group-batch').value.trim();
       const sni = document.getElementById('input-batch-sni').value.trim();
       const btn = document.getElementById('btn-add-batch');
 
@@ -1004,6 +1307,7 @@
         if (data.success) {
           showToast(`✅ 成功添加 ${data.succeeded} 个中转节点！`);
           document.getElementById('input-batch-text').value = '';
+          await fetchGroupsDetail();
           fetchNodesList();
         } else {
           alert('批量添加失败: ' + (data.error || '未知错误'));
@@ -1019,13 +1323,14 @@
     function openSetGroupModal(nodeId, nodeName, currentGroup) {
       document.getElementById('edit-node-id').value = nodeId;
       document.getElementById('edit-node-name').value = nodeName;
-      document.getElementById('edit-node-group').value = currentGroup;
+      const sel = document.getElementById('edit-node-group-select');
+      sel.value = currentGroup;
       document.getElementById('modal-set-group').classList.add('open');
     }
 
     async function submitSetGroup() {
       const nodeId = document.getElementById('edit-node-id').value;
-      const groupName = document.getElementById('edit-node-group').value.trim() || '默认分组';
+      const groupName = document.getElementById('edit-node-group-select').value.trim() || '默认分组';
       try {
         const res = await fetch('/api/nodes/set-group', {
           method: 'POST',
@@ -1036,10 +1341,13 @@
         if (data.success) {
           showToast('分组修改成功');
           closeModal('modal-set-group');
+          await fetchGroupsDetail();
           fetchNodesList();
+        } else {
+          alert('修改失败: ' + data.message);
         }
       } catch (e) {
-        alert('修改失败: ' + e.message);
+        alert('操作失败: ' + e.message);
       }
     }
 
@@ -1054,6 +1362,7 @@
         const data = await res.json();
         if (data.success) {
           showToast('节点已彻底删除');
+          await fetchGroupsDetail();
           fetchNodesList();
         } else {
           alert('删除失败: ' + data.msg);
