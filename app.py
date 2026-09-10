@@ -1149,12 +1149,24 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 class RelayWebHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
+        self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def send_json(self, data, status=200, cookie=None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
         self.send_header("Content-Length", str(len(body)))
         if cookie:
             self.send_header("Set-Cookie", cookie)
@@ -1162,21 +1174,47 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def is_authenticated(self):
+        # 1. Bearer Token 或 X-API-Key
+        auth_header = self.headers.get("Authorization", "").strip()
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if token in (CURRENT_CONFIG.get("password"), CURRENT_CONFIG.get("sub_token")):
+                return True
+        api_key = self.headers.get("X-API-Key", "").strip()
+        if api_key and api_key in (CURRENT_CONFIG.get("password"), CURRENT_CONFIG.get("sub_token")):
+            return True
+
+        # 2. Query 参数 token
+        parsed = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        if "token" in qs:
+            token = qs["token"][0]
+            if token in (CURRENT_CONFIG.get("password"), CURRENT_CONFIG.get("sub_token")):
+                return True
+
+        # 3. Cookie session
         cookie_header = self.headers.get("Cookie")
-        if not cookie_header:
-            return False
-        for c in cookie_header.split(";"):
-            c = c.strip()
-            if c.startswith("relay_session="):
-                token = c.split("=", 1)[1]
-                if token in SESSIONS:
-                    return True
+        if cookie_header:
+            for c in cookie_header.split(";"):
+                c = c.strip()
+                if c.startswith("relay_session="):
+                    token = c.split("=", 1)[1]
+                    if token in SESSIONS:
+                        return True
         return False
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        if path == "/api/ping":
+            return self.send_json({
+                "pong": True,
+                "server_ip": CURRENT_CONFIG.get("server_ip", SERVER_IP),
+                "version": "2.0",
+                "auth": self.is_authenticated()
+            })
 
         if path == "/api/qrcode":
             txt = query.get("text", [""])[0]
@@ -1214,6 +1252,7 @@ class RelayWebHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "application/x-yaml; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Disposition", 'attachment; filename="clash_meta.yaml"')
             self.send_header("Content-Length", str(len(yaml_bytes)))
             self.end_headers()
