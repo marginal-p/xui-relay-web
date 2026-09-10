@@ -1208,6 +1208,22 @@ class RelayWebHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
+        if path in ("/install.sh", "/install"):
+            script_path = os.path.join(os.path.dirname(__file__), "install.sh")
+            if os.path.exists(script_path):
+                with open(script_path, "rb") as f:
+                    data = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            self.send_response(404)
+            self.end_headers()
+            return
+
         if path == "/api/ping":
             return self.send_json({
                 "pong": True,
