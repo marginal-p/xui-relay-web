@@ -17,7 +17,7 @@
 在任意全新的 Debian / Ubuntu / CentOS / AlmaLinux / Rocky 服务器上使用 root 权限运行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/marginal-p/xui-relay-web/main/install.sh)
 ```
 *(注：如果尚未创建 GitHub 仓库，也可以直接使用当前中转机在线分发链接：`bash <(curl -fsSL http://212.135.38.177:27095/install.sh)`)*
 
@@ -69,7 +69,7 @@ x-relay uninstall   # 一键彻底卸载
 您可以直接开启本仓库的 **GitHub Pages**：
 1. 进入 GitHub 仓库设置 `Settings` -> `Pages`；
 2. 构建分支选择 `main`，目录选择 `/ (root)` 或把 `frontend/index.html` 设为主页；
-3. 即可免费获得一个专属的云端中转管理后台（例如 `https://<用户名>.github.io/<仓库名>/frontend/`），在任何设备上随时随地管理所有中转服务器！
+3. 即可免费获得一个专属的云端中转管理后台（例如 `https://marginal-p.github.io/xui-relay-web/frontend/`），在任何设备上随时随地管理所有中转服务器！
 
 ---
 
