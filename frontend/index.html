@@ -645,11 +645,37 @@
           <div id="group-filter-tabs" style="display:flex; gap:0.3rem;"></div>
         </div>
       </div>
+      <!-- 批量操作工具条 -->
+      <div id="batch-action-bar" style="display:none; background:rgba(30, 41, 59, 0.95); border-bottom:1px solid rgba(99, 102, 241, 0.4); padding:0.6rem 1.25rem; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.75rem;">
+        <div style="display:flex; align-items:center; gap:0.6rem;">
+          <span style="background:#4f46e5; color:#fff; font-size:0.75rem; padding:3px 10px; border-radius:4px; font-weight:700;">
+            已选中 <span id="batch-selected-count">0</span> 个节点
+          </span>
+          <span style="font-size:0.8rem; color:#94a3b8;">支持批量导出、批量分组与一键删除</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+          <button onclick="openBatchExportModal()" class="btn btn-primary btn-sm" style="background:#2563eb;">
+            📥 批量导出 (<span class="batch-count-span">0</span>)
+          </button>
+          <button onclick="openBatchSetGroupModal()" class="btn btn-secondary btn-sm">
+            🏷️ 批量分组 (<span class="batch-count-span">0</span>)
+          </button>
+          <button onclick="executeBatchDelete()" class="btn btn-danger btn-sm">
+            🗑️ 批量删除 (<span class="batch-count-span">0</span>)
+          </button>
+          <button onclick="clearNodeSelection()" class="btn btn-secondary btn-sm" style="color:#94a3b8;">
+            取消选择
+          </button>
+        </div>
+      </div>
       <div class="card-body" style="padding:0;">
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th style="width:44px; text-align:center;">
+                  <input type="checkbox" id="check-all-nodes" onchange="toggleSelectAllNodes(this.checked)" style="cursor:pointer; width:16px; height:16px; accent-color:#4f46e5;">
+                </th>
                 <th>节点备注 / 分组</th>
                 <th>中转端口</th>
                 <th>落地目标 (Outbound)</th>
@@ -659,7 +685,7 @@
               </tr>
             </thead>
             <tbody id="table-node-rows">
-              <tr><td colspan="6" style="text-align:center; color:#64748b; padding:2rem;">加载节点列表中...</td></tr>
+              <tr><td colspan="7" style="text-align:center; color:#64748b; padding:2rem;">加载节点列表中...</td></tr>
             </tbody>
           </table>
         </div>
@@ -852,6 +878,55 @@
     </div>
   </div>
 
+  <!-- 7. 选中节点批量导出模态框 -->
+  <div id="modal-batch-export" class="modal-overlay">
+    <div class="modal-dialog" style="max-width: 680px;">
+      <div class="modal-header">
+        <div class="modal-title">📥 批量导出所选节点 (<span id="batch-export-count">0</span> 个)</div>
+        <button onclick="closeModal('modal-batch-export')" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;">
+          <button id="btn-tab-clash" onclick="switchBatchExportTab('clash')" class="btn btn-primary btn-sm">Clash Meta (Mihomo) 配置</button>
+          <button id="btn-tab-vless" onclick="switchBatchExportTab('vless')" class="btn btn-secondary btn-sm">VLESS 链接文本</button>
+          <button id="btn-tab-base64" onclick="switchBatchExportTab('base64')" class="btn btn-secondary btn-sm">Base64 订阅文本</button>
+        </div>
+        <div class="form-group">
+          <textarea id="batch-export-preview" class="form-control" rows="12" readonly style="font-family:monospace; font-size:0.75rem; white-space:pre;"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="copyBatchExportContent()" class="btn btn-primary">📋 复制当前内容</button>
+        <button onclick="downloadBatchExportFile()" class="btn btn-secondary">💾 下载配置文件</button>
+        <button onclick="closeModal('modal-batch-export')" class="btn btn-secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. 批量修改节点分组模态框 -->
+  <div id="modal-batch-group" class="modal-overlay">
+    <div class="modal-dialog" style="max-width: 440px;">
+      <div class="modal-header">
+        <div class="modal-title">🏷️ 批量修改节点分组</div>
+        <button onclick="closeModal('modal-batch-group')" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:0.85rem; color:#94a3b8; margin-bottom:0.75rem;">
+          将已选中的 <strong id="batch-group-count" style="color:#a5b4fc;">0</strong> 个节点批量移动到目标分组：
+        </p>
+        <div class="form-group">
+          <label class="form-label">选择现有分组 或 输入新分组名称</label>
+          <input type="text" id="batch-group-input" class="form-control" placeholder="例如: 优质专线 / 备用">
+          <div style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:0.6rem;" id="batch-group-chips"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button onclick="closeModal('modal-batch-group')" class="btn btn-secondary">取消</button>
+        <button onclick="submitBatchSetGroup()" class="btn btn-primary">确认批量移动</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 7. 二维码模态框 -->
   <div id="modal-qr" class="modal-overlay">
     <div class="modal-dialog" style="max-width: 380px; text-align:center;">
@@ -902,6 +977,8 @@
     let currentNodes = [];
     let selectedFilterGroup = '全部';
     let currentClashSubUrl = '';
+    let selectedNodeIds = new Set();
+    let currentBatchExportTab = 'clash';
 
     function loadServersConfig() {
       try {
@@ -1104,12 +1181,20 @@
       const tbody = document.getElementById('table-node-rows');
       document.getElementById('badge-total').innerText = currentNodes.length;
 
+      // 清理已不在当前节点列表中的已选ID
+      const currentIds = new Set(currentNodes.map(n => n.id));
+      for (const id of Array.from(selectedNodeIds)) {
+        if (!currentIds.has(id)) {
+          selectedNodeIds.delete(id);
+        }
+      }
+
       let relayCount = 0;
       let totalUp = 0;
       let totalDown = 0;
 
       if (currentNodes.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#64748b; padding:2rem;">当前筛选分组下暂无节点</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#64748b; padding:2rem;">当前筛选分组下暂无节点</td></tr>`;
       } else {
         let html = '';
         currentNodes.forEach((n, idx) => {
@@ -1134,9 +1219,18 @@
 
           const groupName = n.group || '默认分组';
           const isEnabled = n.enable;
+          const isSelected = selectedNodeIds.has(n.id);
+
+          let rowBg = isSelected ? 'background: rgba(99, 102, 241, 0.12);' : '';
+          if (!isEnabled) {
+            rowBg += 'opacity: 0.65; background: rgba(239,68,68,0.04);';
+          }
 
           html += `
-            <tr style="${!isEnabled ? 'opacity: 0.65; background: rgba(239,68,68,0.04);' : ''}">
+            <tr style="${rowBg}">
+              <td style="text-align:center; width:44px;">
+                <input type="checkbox" class="node-select-cb" value="${n.id}" ${isSelected ? 'checked' : ''} onchange="toggleSelectNode(${n.id}, this.checked)" style="cursor:pointer; width:16px; height:16px; accent-color:#4f46e5;">
+              </td>
               <td>
                 <div style="display:flex; flex-direction:column; gap:0.25rem;">
                   <div style="display:flex; align-items:center; gap:0.4rem; font-weight:600;">
@@ -1173,6 +1267,267 @@
       document.getElementById('stat-count').innerText = `${relayCount} / ${currentNodes.length}`;
       document.getElementById('stat-up').innerText = formatTraffic(totalUp);
       document.getElementById('stat-down').innerText = formatTraffic(totalDown);
+
+      updateBatchActionBar();
+    }
+
+    // ==================== 多选管理与批量操作 ====================
+    function toggleSelectNode(nodeId, checked) {
+      if (checked) {
+        selectedNodeIds.add(nodeId);
+      } else {
+        selectedNodeIds.delete(nodeId);
+      }
+      updateBatchActionBar();
+    }
+
+    function toggleSelectAllNodes(checked) {
+      if (checked) {
+        currentNodes.forEach(n => selectedNodeIds.add(n.id));
+      } else {
+        currentNodes.forEach(n => selectedNodeIds.delete(n.id));
+      }
+      renderNodesTable();
+    }
+
+    function clearNodeSelection() {
+      selectedNodeIds.clear();
+      renderNodesTable();
+    }
+
+    function updateBatchActionBar() {
+      const bar = document.getElementById('batch-action-bar');
+      const count = selectedNodeIds.size;
+      const countSpans = document.querySelectorAll('.batch-count-span');
+      const selectedCountSpan = document.getElementById('batch-selected-count');
+      
+      if (selectedCountSpan) selectedCountSpan.innerText = count;
+      countSpans.forEach(s => s.innerText = count);
+
+      if (count > 0) {
+        bar.style.display = 'flex';
+      } else {
+        bar.style.display = 'none';
+      }
+
+      const checkAll = document.getElementById('check-all-nodes');
+      if (checkAll) {
+        checkAll.checked = (currentNodes.length > 0 && currentNodes.every(n => selectedNodeIds.has(n.id)));
+      }
+    }
+
+    function getSelectedNodesList() {
+      return currentNodes.filter(n => selectedNodeIds.has(n.id));
+    }
+
+    // 批量删除
+    async function executeBatchDelete() {
+      const count = selectedNodeIds.size;
+      if (count === 0) {
+        showToast('请先勾选需要删除的节点');
+        return;
+      }
+
+      if (!confirm(`⚠️ 确定要批量删除选中的 ${count} 个中转节点吗？\n\n该操作将同时清除底层 Xray 的路由映射与出站规则，且不可撤销！`)) {
+        return;
+      }
+
+      try {
+        const res = await apiFetch('/api/nodes/batch-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: Array.from(selectedNodeIds) })
+        });
+        if (res.success) {
+          showToast(`🎉 ${res.msg || '批量删除成功'}`);
+          selectedNodeIds.clear();
+          await fetchGroupsDetail();
+          fetchNodesList();
+        } else {
+          alert('批量删除失败: ' + (res.error || res.msg));
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    // 批量修改分组
+    function openBatchSetGroupModal() {
+      const count = selectedNodeIds.size;
+      if (count === 0) {
+        showToast('请先勾选节点');
+        return;
+      }
+      document.getElementById('batch-group-count').innerText = count;
+      document.getElementById('batch-group-input').value = '';
+
+      const chips = document.getElementById('batch-group-chips');
+      chips.innerHTML = allGroups.map(g => `
+        <span onclick="document.getElementById('batch-group-input').value='${g}'" style="cursor:pointer; font-size:0.75rem; background:rgba(255,255,255,0.06); padding:2px 8px; border-radius:4px; border:1px solid rgba(255,255,255,0.1);">
+          🏷️ ${g}
+        </span>
+      `).join('');
+
+      document.getElementById('modal-batch-group').classList.add('open');
+    }
+
+    async function submitBatchSetGroup() {
+      const groupName = document.getElementById('batch-group-input').value.trim();
+      if (!groupName) {
+        showToast('请输入目标分组名称');
+        return;
+      }
+
+      try {
+        const res = await apiFetch('/api/nodes/batch-set-group', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids: Array.from(selectedNodeIds),
+            group: groupName
+          })
+        });
+        if (res.success) {
+          showToast(`🎉 ${res.msg || '分组修改成功'}`);
+          closeModal('modal-batch-group');
+          await fetchGroupsDetail();
+          fetchNodesList();
+        } else {
+          alert('修改分组失败: ' + res.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    // 批量导出模态框与生成逻辑
+    function openBatchExportModal() {
+      const count = selectedNodeIds.size;
+      if (count === 0) {
+        showToast('请先勾选需要导出的节点');
+        return;
+      }
+      document.getElementById('batch-export-count').innerText = count;
+      switchBatchExportTab(currentBatchExportTab || 'clash');
+      document.getElementById('modal-batch-export').classList.add('open');
+    }
+
+    function switchBatchExportTab(tab) {
+      currentBatchExportTab = tab;
+      const btnClash = document.getElementById('btn-tab-clash');
+      const btnVless = document.getElementById('btn-tab-vless');
+      const btnBase64 = document.getElementById('btn-tab-base64');
+      const preview = document.getElementById('batch-export-preview');
+
+      btnClash.className = (tab === 'clash') ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+      btnVless.className = (tab === 'vless') ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+      btnBase64.className = (tab === 'base64') ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm';
+
+      const nodes = getSelectedNodesList();
+      if (tab === 'clash') {
+        preview.value = generateSelectedNodesClashYaml(nodes);
+      } else if (tab === 'vless') {
+        preview.value = nodes.map(n => n.vless_link).filter(Boolean).join('\n');
+      } else if (tab === 'base64') {
+        const raw = nodes.map(n => n.vless_link).filter(Boolean).join('\n');
+        preview.value = btoa(unescape(encodeURIComponent(raw)));
+      }
+    }
+
+    function generateSelectedNodesClashYaml(nodes) {
+      let serverHost = activeServer.url.replace(/^https?:\/\//, '').split(':')[0];
+      let allProxiesYaml = [];
+      let allProxyNames = [];
+
+      nodes.forEach(n => {
+        let exitIp = (n.outbound && n.outbound.host) ? n.outbound.host : (n.remark || 'node');
+        if (exitIp.includes(':') && !exitIp.startsWith('[')) exitIp = exitIp.split(':')[0];
+        if (exitIp.includes('-')) {
+          const p = exitIp.split('-');
+          if (/^\d+$/.test(p[p.length - 1])) exitIp = p.slice(0, -1).join('-');
+        }
+
+        let proxyName = exitIp;
+        if (allProxyNames.includes(proxyName)) {
+          let cnt = 2;
+          while (allProxyNames.includes(`${proxyName} (${cnt})`)) cnt++;
+          proxyName = `${proxyName} (${cnt})`;
+        }
+        allProxyNames.push(proxyName);
+
+        allProxiesYaml.push(`  - name: "${proxyName}"`);
+        allProxiesYaml.push(`    type: vless`);
+        allProxiesYaml.push(`    server: ${serverHost}`);
+        allProxiesYaml.push(`    port: ${n.port}`);
+        allProxiesYaml.push(`    uuid: "${n.uuid}"`);
+        allProxiesYaml.push(`    network: tcp`);
+        allProxiesYaml.push(`    udp: true`);
+        allProxiesYaml.push(`    tls: true`);
+        allProxiesYaml.push(`    flow: ""`);
+        allProxiesYaml.push(`    servername: "${n.sni || 'apple.com'}"`);
+        allProxiesYaml.push(`    reality-opts:`);
+        allProxiesYaml.push(`      public-key: "${n.public_key}"`);
+        allProxiesYaml.push(`      short-id: "${n.short_id || ''}"`);
+        allProxiesYaml.push(`    client-fingerprint: chrome\n`);
+      });
+
+      if (allProxyNames.length === 0) {
+        allProxyNames = ['DIRECT'];
+      }
+
+      let yaml = `# ========================================================\n`;
+      yaml += `# Clash Meta 导出配置 - 选中节点数: ${nodes.length}\n`;
+      yaml += `# 服务器: ${activeServer.name} (${serverHost})\n`;
+      yaml += `# ========================================================\n\n`;
+      yaml += `port: 7890\nsocks-port: 7891\nallow-lan: true\nmode: rule\nlog-level: info\nexternal-controller: 127.0.0.1:9090\n\n`;
+      yaml += `dns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n  fake-ip-range: 198.18.0.1/16\n  nameserver:\n    - 119.29.29.29\n    - 223.5.5.5\n  fallback:\n    - 8.8.8.8\n    - 1.1.1.1\n\n`;
+      yaml += `proxies:\n` + allProxiesYaml.join('\n') + `\n`;
+      yaml += `proxy-groups:\n  - name: "节点选择"\n    type: select\n    proxies:\n      - "自动选择"\n`;
+      allProxyNames.forEach(p => yaml += `      - "${p}"\n`);
+      yaml += `      - "DIRECT"\n\n`;
+      yaml += `  - name: "自动选择"\n    type: url-test\n    url: "http://www.gstatic.com/generate_204"\n    interval: 300\n    tolerance: 50\n    proxies:\n`;
+      allProxyNames.forEach(p => yaml += `      - "${p}"\n`);
+      yaml += `\nrules:\n  - GEOIP,CN,DIRECT\n  - GEOSITE,CN,DIRECT\n  - MATCH,节点选择\n`;
+      return yaml;
+    }
+
+    function copyBatchExportContent() {
+      const content = document.getElementById('batch-export-preview').value;
+      if (!content) {
+        showToast('没有可复制的内容');
+        return;
+      }
+      copyVlessText(content);
+      showToast('📋 已复制到剪贴板！');
+    }
+
+    function downloadBatchExportFile() {
+      const content = document.getElementById('batch-export-preview').value;
+      if (!content) {
+        showToast('没有可下载的内容');
+        return;
+      }
+      let filename = 'export_nodes.txt';
+      let mime = 'text/plain';
+      if (currentBatchExportTab === 'clash') {
+        filename = `clash_meta_selected_${Date.now()}.yaml`;
+        mime = 'text/yaml';
+      } else if (currentBatchExportTab === 'vless') {
+        filename = `vless_selected_${Date.now()}.txt`;
+      } else if (currentBatchExportTab === 'base64') {
+        filename = `subscription_selected_${Date.now()}.txt`;
+      }
+
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast(`💾 文件已下载: ${filename}`);
     }
 
     function renderFilterTabs() {

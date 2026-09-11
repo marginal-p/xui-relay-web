@@ -383,6 +383,11 @@ class NodeParser:
 
         # 6. Socks5 / 纯 IP:Port:User:Pass
         line = raw
+        remark_from_hash = None
+        if "#" in line:
+            line, hash_part = line.split("#", 1)
+            remark_from_hash = urllib.parse.unquote(hash_part).strip() or None
+
         if line.startswith("socks5://"): line = line[9:]
         elif line.startswith("socks://"): line = line[8:]
         host = user = pwd = ""
@@ -394,17 +399,17 @@ class NodeParser:
             if ":" in host_part:
                 h, p = host_part.split(":", 1)
                 host = h
-                port = int(p.split("/")[0])
+                port = int(p.split("/")[0].split("?")[0].strip())
             else:
                 host = host_part
         else:
             parts = line.split(":")
             if len(parts) == 4:
-                host = parts[0]; port = int(parts[1]); user = parts[2]; pwd = parts[3]
+                host = parts[0]; port = int(parts[1].split("/")[0].split("?")[0].strip()); user = parts[2]; pwd = parts[3]
             elif len(parts) == 2:
-                host = parts[0]; port = int(parts[1].split("/")[0])
+                host = parts[0]; port = int(parts[1].split("/")[0].split("?")[0].strip())
             elif len(parts) == 3:
-                host = parts[0]; port = int(parts[1]); user = parts[2]
+                host = parts[0]; port = int(parts[1].split("/")[0].split("?")[0].strip()); user = parts[2]
             else:
                 return None
 
@@ -423,7 +428,7 @@ class NodeParser:
             "port": port,
             "user": user,
             "pass": pwd,
-            "remark": host,
+            "remark": remark_from_hash or host,
             "outbound_tag": outbound_tag,
             "outbound": outbound,
             "display": f"Socks5 {host}:{port}"
@@ -1359,6 +1364,77 @@ class XuiManager:
             conn.close()
             return False, f"删除失败: {e}"
 
+    def batch_delete_nodes(self, inbound_ids):
+        """批量删除中转节点，单次事务清理路由、出站、数据库，并仅重载一次 x-ui"""
+        if not inbound_ids:
+            return True, 0, "未选择任何节点"
+
+        conn = self.get_connection()
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        try:
+            placeholders = ",".join("?" for _ in inbound_ids)
+            c.execute(f"SELECT id, tag FROM inbounds WHERE id IN ({placeholders});", tuple(inbound_ids))
+            rows = c.fetchall()
+            if not rows:
+                conn.close()
+                return False, 0, "未找到指定的入站节点"
+
+            inbound_tags = set(r["tag"] for r in rows)
+            found_ids = [r["id"] for r in rows]
+
+            template = self.get_template_config(c)
+            rules = template.get("routing", {}).get("rules", [])
+            outbounds = template.get("outbounds", [])
+
+            matched_outbounds = set()
+            new_rules = []
+            for r in rules:
+                in_tags = r.get("inboundTag", [])
+                has_deleted = any(t in inbound_tags for t in in_tags)
+                if has_deleted:
+                    out_tag = r.get("outboundTag")
+                    if out_tag:
+                        matched_outbounds.add(out_tag)
+                else:
+                    new_rules.append(r)
+            template["routing"]["rules"] = new_rules
+
+            # 清理无引用的 outbounds
+            for out_tag in matched_outbounds:
+                still_used = any(r.get("outboundTag") == out_tag for r in new_rules)
+                if not still_used:
+                    outbounds = [o for o in outbounds if o.get("tag") != out_tag]
+            template["outbounds"] = outbounds
+
+            self.save_template_config(c, template)
+
+            c.execute(f"DELETE FROM inbounds WHERE id IN ({placeholders});", tuple(found_ids))
+            c.execute(f"DELETE FROM relay_groups WHERE inbound_id IN ({placeholders});", tuple(found_ids))
+            conn.commit()
+            conn.close()
+
+            self.restart_xui()
+            return True, len(found_ids), f"已成功删除 {len(found_ids)} 个节点"
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            return False, 0, f"批量删除失败: {e}"
+
+    def batch_set_node_group(self, inbound_ids, group_name):
+        """批量修改节点所属分组"""
+        group_name = (group_name or DEFAULT_GROUP).strip()
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (group_name,))
+        for iid in inbound_ids:
+            c.execute("INSERT INTO relay_groups (inbound_id, group_name) VALUES (?, ?) ON CONFLICT(inbound_id) DO UPDATE SET group_name=?;", (iid, group_name, group_name))
+        conn.commit()
+        conn.close()
+        self.check_traffic_limits()
+        return True
+
 # 后台流量巡检守护线程
 def traffic_guard_worker():
     mgr = XuiManager()
@@ -1633,7 +1709,11 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 except Exception: custom_port = None
             sni = (params.get("sni") or "").strip() or None
 
-            parsed_node = NodeParser.parse(raw_input)
+            try:
+                parsed_node = NodeParser.parse(raw_input)
+            except Exception as pe:
+                return self.send_json({"success": False, "error": f"节点解析失败: {pe}"}, 400)
+
             if not parsed_node:
                 return self.send_json({"success": False, "error": "无法识别此节点格式，支持 Socks5/VMess/VLESS/Trojan/SS/HTTP"}, 400)
 
@@ -1733,6 +1813,27 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             mgr = XuiManager()
             ok, msg = mgr.delete_node(int(node_id))
             return self.send_json({"success": ok, "msg": msg})
+
+        if path == "/api/nodes/batch-delete":
+            ids = params.get("ids") or []
+            if not ids or not isinstance(ids, list):
+                return self.send_json({"success": False, "error": "请提供要删除的节点ID列表"}, 400)
+            clean_ids = [int(x) for x in ids if str(x).isdigit()]
+            if not clean_ids:
+                return self.send_json({"success": False, "error": "无效的节点ID列表"}, 400)
+            mgr = XuiManager()
+            ok, count, msg = mgr.batch_delete_nodes(clean_ids)
+            return self.send_json({"success": ok, "deleted_count": count, "msg": msg})
+
+        if path == "/api/nodes/batch-set-group":
+            ids = params.get("ids") or []
+            group_name = (params.get("group") or DEFAULT_GROUP).strip()
+            if not ids or not isinstance(ids, list):
+                return self.send_json({"success": False, "error": "请提供节点ID列表"}, 400)
+            clean_ids = [int(x) for x in ids if str(x).isdigit()]
+            mgr = XuiManager()
+            mgr.batch_set_node_group(clean_ids, group_name)
+            return self.send_json({"success": True, "count": len(clean_ids), "msg": f"已将 {len(clean_ids)} 个节点移动至分组【{group_name}】"})
 
         # 分组管理接口
         if path == "/api/groups/save":
