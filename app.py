@@ -18,6 +18,7 @@ import secrets
 import base64
 import threading
 import urllib.parse
+import re
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -1413,31 +1414,49 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 return self.send_json({"success": False, "error": str(e)}, 500)
 
         if path == "/api/nodes/batch-add":
-            batch_text = (params.get("batch_text") or "").strip()
+            batch_text = (params.get("batch_text") or params.get("raw_text") or params.get("text") or "").strip()
             group_name = (params.get("group") or DEFAULT_GROUP).strip()
             sni = (params.get("sni") or "").strip() or None
-            lines = [l.strip() for l in batch_text.splitlines() if l.strip()]
-            if not lines:
+
+            # 智能清洗每一行（去除首尾空格、去除序号如 "1. "、去除多余引号）
+            raw_lines = batch_text.splitlines()
+            cleaned_lines = []
+            for l in raw_lines:
+                item = l.strip()
+                if not item:
+                    continue
+                # 去除前缀序号 (如 "1. ", "1、", "- ")
+                item = re.sub(r'^[\d]+[\.\、\-\s]+\s*', '', item)
+                item = re.sub(r'^[\-\+\*]\s+', '', item)
+                # 去除首尾包裹的单双引号
+                if (item.startswith('"') and item.endswith('"')) or (item.startswith("'") and item.endswith("'")):
+                    item = item[1:-1].strip()
+                if item:
+                    cleaned_lines.append(item)
+
+            if not cleaned_lines:
                 return self.send_json({"success": False, "error": "没有输入有效的节点行"}, 400)
 
             mgr = XuiManager()
             success_nodes = []
             errors = []
 
-            for line in lines:
+            for idx, line in enumerate(cleaned_lines):
                 parsed_node = NodeParser.parse(line)
                 if not parsed_node:
-                    errors.append(f"解析失败: {line[:30]}...")
+                    errors.append(f"第 {idx+1} 行解析失败: {line[:40]}...")
                     continue
                 try:
                     res = mgr.add_relay_node(parsed_node, sni=sni, group_name=group_name)
                     success_nodes.append(res)
                 except Exception as e:
-                    errors.append(f"添加失败: {e}")
+                    errors.append(f"第 {idx+1} 行添加失败: {e}")
 
             return self.send_json({
                 "success": True,
-                "total": len(lines),
+                "total": len(cleaned_lines),
+                "added_count": len(success_nodes),
+                "failed_count": len(errors),
                 "succeeded": len(success_nodes),
                 "nodes": success_nodes,
                 "errors": errors
