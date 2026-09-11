@@ -977,7 +977,7 @@ class XuiManager:
         return nodes
 
     def add_batch_relay_nodes(self, parsed_nodes_list, sni=None, group_name=DEFAULT_GROUP):
-        """批量添加中转节点，单次事务批量写入并仅重载一次 x-ui"""
+        """批量添加中转节点，单次事务批量写入，支持落地目标智能自动去重，并仅重载一次 x-ui"""
         group_name = (group_name or DEFAULT_GROUP).strip()
         sni = sni or CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
         conn = self.get_connection()
@@ -988,11 +988,27 @@ class XuiManager:
             outbounds = template.get("outbounds", [])
             rules = template.get("routing", {}).get("rules", [])
 
-            # 收集已使用的端口
-            c.execute("SELECT port FROM inbounds;")
-            used_ports = set(r[0] for r in c.fetchall())
+            # 1. 收集已使用的端口及已有入站 tag 映射
+            c.execute("SELECT id, port, tag FROM inbounds;")
+            inbound_rows = c.fetchall()
+            used_ports = set(r[1] for r in inbound_rows)
+            inbound_tag_to_info = {r[2]: (r[0], r[1]) for r in inbound_rows}
+
+            # 2. 收集系统已有落地节点映射: outbound_tag -> (inbound_id, port)
+            existing_relays = {}
+            for r in rules:
+                out_tag = r.get("outboundTag")
+                in_tags = r.get("inboundTag", [])
+                if out_tag and in_tags:
+                    for itag in in_tags:
+                        if itag in inbound_tag_to_info:
+                            existing_relays[out_tag] = inbound_tag_to_info[itag]
+                            break
 
             created_nodes = []
+            skipped_nodes = []
+            batch_seen_tags = set()
+
             for item in parsed_nodes_list:
                 node_info = item["node_info"]
                 custom_port = item.get("custom_port")
@@ -1000,6 +1016,32 @@ class XuiManager:
                 new_outbound = node_info["outbound"]
                 host = node_info.get("host", "")
                 remark = item.get("remark") or node_info.get("remark") or host
+
+                # 智能去重检测: 本批次内去重
+                if outbound_tag in batch_seen_tags:
+                    skipped_nodes.append({
+                        "outbound_tag": outbound_tag,
+                        "remark": remark,
+                        "reason": "批次内重复节点已跳过"
+                    })
+                    continue
+
+                # 智能去重检测: 服务器已有落地节点去重
+                if outbound_tag in existing_relays:
+                    ex_id, ex_port = existing_relays[outbound_tag]
+                    # 同步归属到新分组
+                    c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (group_name,))
+                    c.execute("INSERT OR REPLACE INTO relay_groups (inbound_id, group_name) VALUES (?, ?);", (ex_id, group_name))
+                    skipped_nodes.append({
+                        "outbound_tag": outbound_tag,
+                        "remark": remark,
+                        "port": ex_port,
+                        "reason": f"落地节点已存在 (中转端口: {ex_port})，已复用并更新分组"
+                    })
+                    batch_seen_tags.add(outbound_tag)
+                    continue
+
+                batch_seen_tags.add(outbound_tag)
 
                 # 寻找可用端口
                 if custom_port and custom_port not in used_ports:
@@ -1103,16 +1145,22 @@ class XuiManager:
                     "sni": sni
                 })
 
-            template["outbounds"] = outbounds
-            template["routing"]["rules"] = rules
-            self.save_template_config(c, template)
+            if created_nodes:
+                template["outbounds"] = outbounds
+                template["routing"]["rules"] = rules
+                self.save_template_config(c, template)
+                conn.commit()
+                conn.close()
+                # 仅在有新增节点时重启 x-ui 核心
+                self.restart_xui()
+            else:
+                conn.commit()
+                conn.close()
 
-            conn.commit()
-            conn.close()
-
-            # 统一仅重启一次 x-ui 核心
-            self.restart_xui()
-            return created_nodes
+            return {
+                "created": created_nodes,
+                "skipped": skipped_nodes
+            }
         except Exception as e:
             conn.rollback()
             conn.close()
@@ -1129,6 +1177,34 @@ class XuiManager:
         c = conn.cursor()
 
         try:
+            template = self.get_template_config(c)
+            outbounds = template.get("outbounds", [])
+            rules = template.get("routing", {}).get("rules", [])
+
+            # 查重检测：检查该 outbound_tag 是否已经存在中转节点
+            c.execute("SELECT id, port, tag FROM inbounds;")
+            inbound_rows = c.fetchall()
+            inbound_tag_to_info = {r[2]: (r[0], r[1]) for r in inbound_rows}
+
+            for r in rules:
+                if r.get("outboundTag") == outbound_tag:
+                    in_tags = r.get("inboundTag", [])
+                    for itag in in_tags:
+                        if itag in inbound_tag_to_info:
+                            ex_id, ex_port = inbound_tag_to_info[itag]
+                            c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (group_name,))
+                            c.execute("INSERT OR REPLACE INTO relay_groups (inbound_id, group_name) VALUES (?, ?);", (ex_id, group_name))
+                            conn.commit()
+                            conn.close()
+                            return {
+                                "success": True,
+                                "is_duplicate": True,
+                                "id": ex_id,
+                                "port": ex_port,
+                                "remark": remark,
+                                "group": group_name,
+                                "msg": f"该落地节点已存在于中转列表 (端口: {ex_port})，已自动复用并更新分组"
+                            }
             port = self.allocate_port(custom_port)
             inbound_tag = f"inbound-{port}"
             sni = sni or CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
@@ -1607,25 +1683,37 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                     errors.append(f"第 {idx+1} 行格式错误: {pe}")
 
             success_nodes = []
+            skipped_nodes = []
             if to_add_list:
                 try:
-                    success_nodes = mgr.add_batch_relay_nodes(to_add_list, sni=sni, group_name=group_name)
+                    batch_res = mgr.add_batch_relay_nodes(to_add_list, sni=sni, group_name=group_name)
+                    if isinstance(batch_res, dict):
+                        success_nodes = batch_res.get("created", [])
+                        skipped_nodes = batch_res.get("skipped", [])
+                    else:
+                        success_nodes = batch_res
                 except Exception as be:
                     # 如果批处理失败，降级为逐个尝试添加
                     for item in to_add_list:
                         try:
                             s_res = mgr.add_relay_node(item["node_info"], sni=sni, group_name=group_name)
-                            success_nodes.append(s_res)
+                            if s_res.get("is_duplicate"):
+                                skipped_nodes.append(s_res)
+                            else:
+                                success_nodes.append(s_res)
                         except Exception as se:
                             errors.append(f"节点挂载失败: {se}")
 
+            total_input = len(cleaned_lines)
             return self.send_json({
                 "success": True,
-                "total": len(cleaned_lines),
+                "total": total_input,
                 "added_count": len(success_nodes),
+                "skipped_count": len(skipped_nodes),
                 "failed_count": len(errors),
                 "succeeded": len(success_nodes),
                 "nodes": success_nodes,
+                "skipped": skipped_nodes,
                 "errors": errors
             })
 
