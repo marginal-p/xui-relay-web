@@ -131,6 +131,19 @@ class NodeParser:
                 b64_str += '=' * (4 - missing_padding)
             data = json.loads(base64.b64decode(b64_str).decode('utf-8'))
             host = data.get("add", "").strip()
+            if not host:
+                host = data.get("host", "").strip()
+            if not host:
+                ps = data.get("ps", "").strip()
+                ip_m = re.search(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', ps)
+                if ip_m:
+                    host = ip_m.group(0)
+                else:
+                    host = ps
+
+            if not host:
+                raise Exception("VMess 节点未提供有效的目标地址 (add/host 均为空)")
+
             port = int(data.get("port", 0))
             uuid_str = data.get("id", "").strip()
             if not is_valid_hex_uuid(uuid_str):
@@ -963,6 +976,148 @@ class XuiManager:
 
         return nodes
 
+    def add_batch_relay_nodes(self, parsed_nodes_list, sni=None, group_name=DEFAULT_GROUP):
+        """批量添加中转节点，单次事务批量写入并仅重载一次 x-ui"""
+        group_name = (group_name or DEFAULT_GROUP).strip()
+        sni = sni or CURRENT_CONFIG.get("default_sni", DEFAULT_SNI)
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        try:
+            template = self.get_template_config(c)
+            outbounds = template.get("outbounds", [])
+            rules = template.get("routing", {}).get("rules", [])
+
+            # 收集已使用的端口
+            c.execute("SELECT port FROM inbounds;")
+            used_ports = set(r[0] for r in c.fetchall())
+
+            created_nodes = []
+            for item in parsed_nodes_list:
+                node_info = item["node_info"]
+                custom_port = item.get("custom_port")
+                outbound_tag = node_info["outbound_tag"]
+                new_outbound = node_info["outbound"]
+                host = node_info.get("host", "")
+                remark = item.get("remark") or node_info.get("remark") or host
+
+                # 寻找可用端口
+                if custom_port and custom_port not in used_ports:
+                    port = custom_port
+                else:
+                    port = None
+                    for p in range(20000, 60000):
+                        if p not in used_ports:
+                            port = p
+                            break
+                    if not port:
+                        raise Exception("没有空闲端口可用")
+                used_ports.add(port)
+
+                inbound_tag = f"inbound-{port}"
+                priv_key, pub_key = XrayHelper.generate_x25519()
+                client_id = XrayHelper.generate_uuid()
+                sid = XrayHelper.generate_short_id()
+
+                outbounds = [o for o in outbounds if o.get("tag") != outbound_tag]
+                outbounds.append(new_outbound)
+
+                new_rule = {
+                    "type": "field",
+                    "inboundTag": [inbound_tag],
+                    "outboundTag": outbound_tag
+                }
+                rules = [r for r in rules if r.get("inboundTag") != [inbound_tag]]
+                rules.insert(0, new_rule)
+
+                in_settings = {
+                    "clients": [{"id": client_id, "flow": ""}],
+                    "decryption": "none",
+                    "encryption": "none",
+                    "selectedAuth": "none"
+                }
+                in_streams = {
+                    "network": "tcp",
+                    "security": "reality",
+                    "realitySettings": {
+                        "show": False,
+                        "fingerprint": "chrome",
+                        "target": f"{sni}:443",
+                        "xver": 0,
+                        "serverNames": [sni],
+                        "privateKey": priv_key,
+                        "publicKey": pub_key,
+                        "mldsa65Seed": "",
+                        "mldsa65Verify": "",
+                        "minClientVer": "",
+                        "maxClientVer": "",
+                        "maxTimeDiff": 0,
+                        "shortIds": [sid]
+                    },
+                    "tcpSettings": {
+                        "header": {"type": "none"}
+                    }
+                }
+                in_sniffing = {
+                    "enabled": True,
+                    "destOverride": ["http", "tls", "quic"]
+                }
+
+                c.execute("""
+                    INSERT INTO inbounds (
+                        user_id, up, down, total, remark, enable, expiry_time,
+                        listen, port, protocol, settings, stream_settings, tag, sniffing
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """, (
+                    1, 0, 0, 0, remark, 1, 0,
+                    "", port, "vless",
+                    json.dumps(in_settings, indent=2),
+                    json.dumps(in_streams, indent=2),
+                    inbound_tag,
+                    json.dumps(in_sniffing, indent=2)
+                ))
+
+                new_inbound_id = c.lastrowid
+                c.execute("INSERT OR IGNORE INTO relay_groups_config (name, traffic_limit, is_paused) VALUES (?, 0, 0);", (group_name,))
+                c.execute("INSERT OR REPLACE INTO relay_groups (inbound_id, group_name) VALUES (?, ?);", (new_inbound_id, group_name))
+
+                server_ip = CURRENT_CONFIG.get("server_ip", SERVER_IP)
+                clean_remark = remark
+                if ":" in clean_remark and not clean_remark.startswith("["):
+                    clean_remark = clean_remark.split(":")[0].strip()
+                if "-" in clean_remark:
+                    parts = clean_remark.rsplit("-", 1)
+                    if parts[1].isdigit():
+                        clean_remark = parts[0].strip()
+
+                vless_link = f"vless://{client_id}@{server_ip}:{port}?security=reality&encryption=none&pbk={pub_key}&headerType=none&fp=chrome&type=tcp&sni={sni}&sid={sid}#{urllib.parse.quote(clean_remark)}"
+
+                created_nodes.append({
+                    "id": new_inbound_id,
+                    "port": port,
+                    "remark": remark,
+                    "vless_link": vless_link,
+                    "uuid": client_id,
+                    "public_key": pub_key,
+                    "short_id": sid,
+                    "sni": sni
+                })
+
+            template["outbounds"] = outbounds
+            template["routing"]["rules"] = rules
+            self.save_template_config(c, template)
+
+            conn.commit()
+            conn.close()
+
+            # 统一仅重启一次 x-ui 核心
+            self.restart_xui()
+            return created_nodes
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            raise e
+
     def add_relay_node(self, node_info, remark=None, custom_port=None, sni=None, group_name=DEFAULT_GROUP):
         outbound_tag = node_info["outbound_tag"]
         new_outbound = node_info["outbound"]
@@ -1438,19 +1593,31 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 return self.send_json({"success": False, "error": "没有输入有效的节点行"}, 400)
 
             mgr = XuiManager()
-            success_nodes = []
+            to_add_list = []
             errors = []
 
             for idx, line in enumerate(cleaned_lines):
-                parsed_node = NodeParser.parse(line)
-                if not parsed_node:
-                    errors.append(f"第 {idx+1} 行解析失败: {line[:40]}...")
-                    continue
                 try:
-                    res = mgr.add_relay_node(parsed_node, sni=sni, group_name=group_name)
-                    success_nodes.append(res)
-                except Exception as e:
-                    errors.append(f"第 {idx+1} 行添加失败: {e}")
+                    parsed_node = NodeParser.parse(line)
+                    if not parsed_node:
+                        errors.append(f"第 {idx+1} 行无法识别节点协议")
+                        continue
+                    to_add_list.append({"node_info": parsed_node})
+                except Exception as pe:
+                    errors.append(f"第 {idx+1} 行格式错误: {pe}")
+
+            success_nodes = []
+            if to_add_list:
+                try:
+                    success_nodes = mgr.add_batch_relay_nodes(to_add_list, sni=sni, group_name=group_name)
+                except Exception as be:
+                    # 如果批处理失败，降级为逐个尝试添加
+                    for item in to_add_list:
+                        try:
+                            s_res = mgr.add_relay_node(item["node_info"], sni=sni, group_name=group_name)
+                            success_nodes.append(s_res)
+                        except Exception as se:
+                            errors.append(f"节点挂载失败: {se}")
 
             return self.send_json({
                 "success": True,
