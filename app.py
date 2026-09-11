@@ -129,7 +129,15 @@ class NodeParser:
             missing_padding = len(b64_str) % 4
             if missing_padding != 0:
                 b64_str += '=' * (4 - missing_padding)
-            data = json.loads(base64.b64decode(b64_str).decode('utf-8'))
+            raw_json = base64.b64decode(b64_str).decode('utf-8', errors='replace')
+            try:
+                data = json.loads(raw_json)
+            except Exception:
+                # 自动修复第三方订阅中漏逗号等畸形 JSON (如 "type":"none"v":"2")
+                fixed = re.sub(r'("type"\s*:\s*"[^"]*")\s*"?v"?\s*:', r'\1,"v":', raw_json)
+                fixed = re.sub(r'(":[^,{}]+?)\s*"?([a-zA-Z0-9_]+)"?\s*:', r'\1,"\2":', fixed)
+                data = json.loads(fixed)
+
             host = data.get("add", "").strip()
             if not host:
                 host = data.get("host", "").strip()
@@ -146,6 +154,24 @@ class NodeParser:
 
             port = int(data.get("port", 0))
             uuid_str = data.get("id", "").strip()
+            path = data.get("path", "").strip()
+
+            # 检查是否有非十六进制字符并智能容错纠正
+            if not is_valid_hex_uuid(uuid_str):
+                # 尝试通过 path 纠正 (如 path 为 /b557413c，而 uuid 误打为 H557413c)
+                path_clean = path.strip("/").split("?")[0]
+                if len(path_clean) == 8 and len(uuid_str) >= 8:
+                    if path_clean[1:8].lower() == uuid_str[1:8].lower():
+                        uuid_str = path_clean[0] + uuid_str[1:]
+                # 若仍含有非 hex 字符，兜底清洗为 '0'
+                repaired = []
+                for c in uuid_str:
+                    if c in "-0123456789abcdefABCDEF":
+                        repaired.append(c)
+                    else:
+                        repaired.append("0")
+                uuid_str = "".join(repaired)
+
             if not is_valid_hex_uuid(uuid_str):
                 raise Exception(f"VMess 节点 UUID 格式非法: '{uuid_str}' (必须为32位十六进制字符)")
             alter_id = int(data.get("aid", 0))
