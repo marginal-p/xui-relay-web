@@ -116,9 +116,30 @@ def is_valid_hex_uuid(val):
         return False
     return all(c in "0123456789abcdefABCDEF" for c in clean)
 
+def validate_node_host(node_dict):
+    if not node_dict:
+        return node_dict
+    host = (node_dict.get("host") or "").strip()
+    if not host:
+        raise Exception("落地目标地址 (host) 不能为空")
+    # 检测纯数字和点构成的 IP 是否残缺
+    if re.match(r'^\d+(\.\d+)*$', host):
+        parts = host.split('.')
+        if len(parts) != 4:
+            raise Exception(f"落地 IP 地址残缺不完整: '{host}' (IPv4 必须包含 4 段数字，例如 77.253.5.X)")
+        for p in parts:
+            if not p.isdigit() or not (0 <= int(p) <= 255):
+                raise Exception(f"落地 IP 地址分段数值无效 (0-255): '{host}'")
+    return node_dict
+
 class NodeParser:
     @staticmethod
     def parse(raw: str):
+        node = NodeParser._parse_raw(raw)
+        return validate_node_host(node)
+
+    @staticmethod
+    def _parse_raw(raw: str):
         raw = (raw or "").strip()
         if not raw:
             return None
