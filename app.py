@@ -1783,9 +1783,11 @@ class RelayWebHandler(BaseHTTPRequestHandler):
                 item = l.strip()
                 if not item:
                     continue
-                # 去除前缀序号 (如 "1. ", "1、", "- ")
-                item = re.sub(r'^[\d]+[\.\、\-\s]+\s*', '', item)
-                item = re.sub(r'^[\-\+\*]\s+', '', item)
+                # 安全去除前缀序号 (如 "1. ", "1、", "- ")，严禁误伤纯 IP 地址 (如 161.77.x.x)
+                item = re.sub(r'^\d+[\.、]\s+(?=\S)', '', item)      # 1. xxx (点号后必须有空格)
+                item = re.sub(r'^\d+、\s*', '', item)                # 1、xxx (中文顿号)
+                item = re.sub(r'^\d+\.(?=[a-zA-Z]+://)', '', item)   # 1.vmess:// (紧跟协议)
+                item = re.sub(r'^[\-\+\*]\s+', '', item)            # - xxx
                 # 去除首尾包裹的单双引号
                 if (item.startswith('"') and item.endswith('"')) or (item.startswith("'") and item.endswith("'")):
                     item = item[1:-1].strip()
