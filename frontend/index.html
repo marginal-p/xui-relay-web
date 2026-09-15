@@ -1866,6 +1866,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            node_id: n.id,
             protocol: n.outbound.protocol,
             host: n.outbound.host,
             port: n.outbound.port,

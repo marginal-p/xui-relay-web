@@ -496,16 +496,15 @@ def test_node_connectivity(node_data, timeout=5):
         try:
             s.connect((host, port))
             if user and pwd:
-                s.sendall(b"\x05\x02\x00\x02")
+                s.sendall(b"\x05\x01\x02")
                 resp = s.recv(2)
-                if len(resp) < 2 or resp[0] != 0x05:
-                    return {"ok": False, "error": "Socks5握手失败"}
-                if resp[1] == 0x02:
-                    u_b, p_b = user.encode(), pwd.encode()
-                    s.sendall(b"\x01" + bytes([len(u_b)]) + u_b + bytes([len(p_b)]) + p_b)
-                    auth_resp = s.recv(2)
-                    if len(auth_resp) < 2 or auth_resp[1] != 0x00:
-                        return {"ok": False, "error": "Socks5认证失败(密码错误)"}
+                if len(resp) < 2 or resp[0] != 0x05 or resp[1] != 0x02:
+                    return {"ok": False, "error": "Socks5服务端未接受密码认证"}
+                u_b, p_b = user.encode(), pwd.encode()
+                s.sendall(b"\x01" + bytes([len(u_b)]) + u_b + bytes([len(p_b)]) + p_b)
+                auth_resp = s.recv(2)
+                if len(auth_resp) < 2 or auth_resp[1] != 0x00:
+                    return {"ok": False, "error": "Socks5认证失败(密码错误)"}
             else:
                 s.sendall(b"\x05\x01\x00")
                 resp = s.recv(2)
@@ -1916,6 +1915,40 @@ class RelayWebHandler(BaseHTTPRequestHandler):
             return self.send_json({"success": ok, "msg": msg})
 
         if path == "/api/nodes/test":
+            node_id = params.get("node_id") or params.get("id")
+            if node_id:
+                try:
+                    nid = int(node_id)
+                    mgr = XuiManager()
+                    conn = mgr.get_connection()
+                    c = conn.cursor()
+                    template = mgr.get_template_config(c)
+                    rules = template.get("routing", {}).get("rules", [])
+                    outbounds = {o.get("tag"): o for o in template.get("outbounds", []) if o.get("tag")}
+                    c.execute("SELECT tag FROM inbounds WHERE id=?;", (nid,))
+                    row = c.fetchone()
+                    conn.close()
+                    if row:
+                        inbound_tag = row[0]
+                        for r in rules:
+                            if inbound_tag in r.get("inboundTag", []):
+                                out_tag = r.get("outboundTag")
+                                if out_tag in outbounds:
+                                    out_cfg = outbounds[out_tag]
+                                    proto = out_cfg.get("protocol")
+                                    servers = out_cfg.get("settings", {}).get("servers", [{}])
+                                    if servers:
+                                        srv = servers[0]
+                                        h = srv.get("address", "")
+                                        p = srv.get("port", 0)
+                                        users = srv.get("users", [{}])
+                                        u = users[0].get("user", "") if users else ""
+                                        pw = users[0].get("pass", "") if users else ""
+                                        t_res = test_node_connectivity({"protocol": proto, "host": h, "port": p, "user": u, "pass": pw})
+                                        return self.send_json({"success": True, "result": t_res})
+                except Exception as ex:
+                    pass
+
             raw_input = (params.get("node_str") or params.get("socks5_str") or "").strip()
             host = (params.get("host") or "").strip()
             port = int(params.get("port") or 0)
